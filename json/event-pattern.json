@@ -1,0 +1,16 @@
+{
+  "source": ["aws.sqs", "aws.lambda"],
+  "detail-type": ["AWS API Call via CloudTrail"],
+  "detail": {
+    "eventSource": ["sqs.amazonaws.com", "lambda.amazonaws.com"],
+    "eventName": [
+      "CreateQueue",
+      "DeleteQueue",
+      "CreateFunction20150331",
+      "DeleteFunction20150331",
+      "CreateEventSourceMapping",
+      "DeleteEventSourceMapping",
+      "UpdateEventSourceMapping"
+    ]
+  }
+}

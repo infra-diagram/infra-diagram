@@ -1,0 +1,6 @@
+[
+  {
+    "Id": "WorkerSQSTarget",
+    "Arn": "arn:aws:sqs:us-east-1:110727845776:diagram-events-queue"
+  }
+]
