@@ -34,12 +34,13 @@ func (c *QueueCrawler) IngestNodes(ctx context.Context, driver neo4j.DriverWithC
 
 		reqAttr := []types.QueueAttributeName{types.QueueAttributeNameQueueArn}
 
-		for _, queueURl := range page.QueueUrls {
+		for _, queueUrl := range page.QueueUrls {
 			res, err := c.client.GetQueueAttributes(ctx,
-				&sqs.GetQueueAttributesInput{QueueUrl: &queueURl, AttributeNames: reqAttr})
+				&sqs.GetQueueAttributesInput{QueueUrl: &queueUrl, AttributeNames: reqAttr})
 
 			if err != nil {
-				return fmt.Errorf("getting %s attributes %w", queueURl, err)
+				log.Printf("getting attributes for %s: %v", queueUrl, err)
+				continue
 			}
 
 			attr := res.Attributes
@@ -48,21 +49,21 @@ func (c *QueueCrawler) IngestNodes(ctx context.Context, driver neo4j.DriverWithC
 			accountId, err := GetAccountIdFromArn(arn)
 
 			if err != nil {
-				log.Printf("skipping %s: %v", queueURl, err)
+				log.Printf("skipping %s: %v", queueUrl, err)
 				continue
 			}
 
 			region, err := GetRegionFromArn(arn)
 
 			if err != nil {
-				log.Printf("skipping %s: %v", queueURl, err)
+				log.Printf("skipping %s: %v", queueUrl, err)
 				continue
 			}
 
 			queueName, err := GetResourceNameFromArn(arn)
 
 			if err != nil {
-				log.Printf("skipping %s: %v", queueURl, err)
+				log.Printf("skipping %s: %v", queueUrl, err)
 				continue
 			}
 
@@ -72,7 +73,7 @@ func (c *QueueCrawler) IngestNodes(ctx context.Context, driver neo4j.DriverWithC
 					AccountId: accountId,
 				},
 				Name:   queueName,
-				Url:    queueURl,
+				Url:    queueUrl,
 				Region: region,
 			}
 
