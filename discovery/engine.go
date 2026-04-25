@@ -11,7 +11,7 @@ import (
 
 type Engine struct {
 	crawlers []crawler.Crawler
-	session  neo4j.SessionWithContext
+	session  neo4j.DriverWithContext
 }
 
 func (e *Engine) Run(ctx context.Context) error {

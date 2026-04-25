@@ -34,6 +34,20 @@ func GetAccountIdFromArn(arn string) (string, error) {
 	return accountId, nil
 }
 
+func GetResourceNameFromArn(arn string) (string, error) {
+	parts := strings.Split(arn, ":")
+
+	if len(parts) < 6 {
+		return "", fmt.Errorf("invalid ARN: %s", arn)
+	}
+
+	resourceName := parts[5]
+	if resourceName == "" {
+		return "", fmt.Errorf("resource name not found in ARN: %s", arn)
+	}
+	return resourceName, nil
+}
+
 func GetRegionFromArn(arn string) (string, error) {
 	parts := strings.Split(arn, ":")
 
