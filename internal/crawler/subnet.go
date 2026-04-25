@@ -3,7 +3,7 @@ package crawler
 import (
 	"context"
 	"fmt"
-	"infra-diagram/models"
+	"infra-diagram/internal/models"
 	"log"
 
 	"github.com/aws/aws-sdk-go-v2/service/ec2"

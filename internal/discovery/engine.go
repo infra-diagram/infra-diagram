@@ -3,7 +3,7 @@ package discovery
 import (
 	"context"
 	"fmt"
-	"infra-diagram/crawler"
+	"infra-diagram/internal/crawler"
 	"sync"
 
 	"github.com/neo4j/neo4j-go-driver/v5/neo4j"
@@ -11,7 +11,11 @@ import (
 
 type Engine struct {
 	crawlers []crawler.Crawler
-	session  neo4j.DriverWithContext
+	driver   neo4j.DriverWithContext
+}
+
+func NewEngine(driver neo4j.DriverWithContext, crawlers []crawler.Crawler) *Engine {
+	return &Engine{driver: driver, crawlers: crawlers}
 }
 
 func (e *Engine) Run(ctx context.Context) error {
@@ -25,7 +29,7 @@ func (e *Engine) Run(ctx context.Context) error {
 		wg.Add(1)
 		go func(cr crawler.Crawler) {
 			defer wg.Done()
-			if err := cr.IngestNodes(ctx, e.session); err != nil {
+			if err := cr.IngestNodes(ctx, e.driver); err != nil {
 				errs <- err
 			}
 		}(c)
@@ -46,7 +50,7 @@ func (e *Engine) Run(ctx context.Context) error {
 		wg.Add(1)
 		go func(cr crawler.Crawler) {
 			defer wg.Done()
-			if err := cr.IngestRelations(ctx, e.session); err != nil {
+			if err := cr.IngestRelations(ctx, e.driver); err != nil {
 				errs <- err
 			}
 		}(c)

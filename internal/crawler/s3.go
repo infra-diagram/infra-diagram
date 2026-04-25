@@ -10,7 +10,7 @@ import (
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/neo4j/neo4j-go-driver/v5/neo4j"
 
-	"infra-diagram/models"
+	"infra-diagram/internal/models"
 )
 
 type S3Crawler struct {
