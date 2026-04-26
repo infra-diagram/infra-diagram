@@ -41,15 +41,7 @@ func (c *SubnetCrawler) IngestNodes(ctx context.Context, driver neo4j.DriverWith
 				continue
 			}
 
-			accountId := ""
-			if subnet.OwnerId != nil {
-				accountId = *subnet.OwnerId
-			}
-
-			if err != nil {
-				log.Printf("skipping %s: %v", *subnet.SubnetArn, err)
-				continue
-			}
+			accountId := *subnet.OwnerId
 
 			node := models.Subnet{
 				AWSResource: models.AWSResource{

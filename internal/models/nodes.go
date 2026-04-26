@@ -7,10 +7,12 @@ type AWSResource struct {
 
 type VPC struct {
 	AWSResource
-	VpcId  string `neo4j:"vpcId"`
-	Cidr   string `neo4j:"cidr"`
-	Name   string `neo4j:"name"`
-	Region string `neo4j:"region"`
+	VpcId     string `neo4j:"vpcId"`
+	Cidr      string `neo4j:"cidr"`
+	Name      string `neo4j:"name"`
+	Region    string `neo4j:"region"`
+	IsDefault bool   `neo4j:"isDefault"`
+	State     string `neo4j:"state"`
 }
 
 type Subnet struct {

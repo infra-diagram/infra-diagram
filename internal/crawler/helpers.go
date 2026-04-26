@@ -3,6 +3,8 @@ package crawler
 import (
 	"fmt"
 	"strings"
+
+	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
 )
 
 // BuildArn construye ARNs con el formato estándar:
@@ -60,4 +62,16 @@ func GetRegionFromArn(arn string) (string, error) {
 		return "", fmt.Errorf("region ID not found in ARN: %s", arn)
 	}
 	return region, nil
+}
+
+func GetNameFromTags(tags []ec2types.Tag) string {
+	for _, tag := range tags {
+		if tag.Key == nil || tag.Value == nil {
+			continue
+		}
+		if *tag.Key == "Name" {
+			return *tag.Value
+		}
+	}
+	return ""
 }

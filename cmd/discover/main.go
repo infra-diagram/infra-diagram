@@ -57,14 +57,17 @@ func main() {
 	}
 	log.Println("Indexes ready")
 
+	ec2Client := ec2.NewFromConfig(awsCfg)
+
 	// 4. Construir los crawlers concretos. Esta es la única lista que cambia
-	//    cuando agregas un nuevo servicio AWS al MVP — todo lo demás es genérico.
+	//    cuando agregas un nuevo servicio AWS al MVP — todo lo demás es genérico.\
 	crawlers := []crawler.Crawler{
+		crawler.NewVPCCrawler(ec2Client, region),
+		crawler.NewSubnetCrawler(ec2Client),
+		crawler.NewEC2Crawler(ec2Client, region),
 		crawler.NewLambdaCrawler(lambda.NewFromConfig(awsCfg)),
 		crawler.NewQueueCrawler(sqs.NewFromConfig(awsCfg)),
 		crawler.NewS3Crawler(s3.NewFromConfig(awsCfg)),
-		crawler.NewSubnetCrawler(ec2.NewFromConfig(awsCfg)),
-		crawler.NewEC2Crawler(ec2.NewFromConfig(awsCfg), region),
 	}
 	log.Printf("Initialized %d crawlers", len(crawlers))
 
