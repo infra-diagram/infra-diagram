@@ -75,3 +75,7 @@ func GetNameFromTags(tags []ec2types.Tag) string {
 	}
 	return ""
 }
+
+func BuildS3Arn(bucketName string) string {
+	return "arn:aws:s3:::" + bucketName
+}

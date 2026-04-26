@@ -21,12 +21,6 @@ func NewS3Crawler(client *s3.Client) *S3Crawler {
 	return &S3Crawler{client: client}
 }
 
-// buildS3Arn construye el ARN especial de S3 que no incluye región ni accountId.
-// Formato: arn:aws:s3:::bucket-name
-func buildS3Arn(bucketName string) string {
-	return "arn:aws:s3:::" + bucketName
-}
-
 // normalizeS3Region maneja el caso especial de us-east-1, donde la API
 // devuelve un string vacío en LocationConstraint en lugar del nombre real.
 func normalizeS3Region(loc s3types.BucketLocationConstraint) string {
@@ -70,7 +64,7 @@ func (c *S3Crawler) IngestNodes(ctx context.Context, driver neo4j.DriverWithCont
 		}
 
 		region := normalizeS3Region(locResp.LocationConstraint)
-		arn := buildS3Arn(bucketName)
+		arn := BuildS3Arn(bucketName)
 
 		node := models.S3Bucket{
 			AWSResource: models.AWSResource{
@@ -121,7 +115,7 @@ func (c *S3Crawler) ingestNotifications(ctx context.Context, driver neo4j.Driver
 
 	for _, b := range resp.Buckets {
 		bucketName := aws.ToString(b.Name)
-		bucketArn := buildS3Arn(bucketName)
+		bucketArn := BuildS3Arn(bucketName)
 
 		notifResp, err := c.client.GetBucketNotificationConfiguration(ctx,
 			&s3.GetBucketNotificationConfigurationInput{Bucket: b.Name},
