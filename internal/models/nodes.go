@@ -42,3 +42,14 @@ type S3Bucket struct {
 	Name   string `neo4j:"name"`
 	Region string `neo4j:"region"`
 }
+
+type EC2Instance struct {
+	AWSResource
+	InstanceId   string `neo4j:"instanceId"`
+	InstanceType string `neo4j:"instanceType"`
+	State        string `neo4j:"state"`
+	VpcId        string `neo4j:"vpcId"`    // vacío si no está en VPC
+	SubnetId     string `neo4j:"subnetId"` // vacío si no está en VPC
+	Region       string `neo4j:"region"`
+	LaunchTime   string `neo4j:"launchTime"` // como ISO 8601 string para Neo4j
+}

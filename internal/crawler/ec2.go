@@ -2,10 +2,14 @@ package crawler
 
 import (
 	"context"
+	"fmt"
 	"log"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/neo4j/neo4j-go-driver/v5/neo4j"
+
+	"infra-diagram/internal/models"
 )
 
 type EC2Crawler struct {
@@ -26,26 +30,81 @@ func (c *EC2Crawler) IngestNodes(ctx context.Context, driver neo4j.DriverWithCon
 	for paginator.HasMorePages() {
 		page, err := paginator.NextPage(ctx)
 		if err != nil {
-			return err
+			return fmt.Errorf("listing ec2 instances: %w", err)
 		}
 
 		for _, reservation := range page.Reservations {
+			if reservation.OwnerId == nil {
+				continue
+			}
+			accountId := *reservation.OwnerId
+
 			for _, i := range reservation.Instances {
-				arn := BuildArn("ec2", c.region, *reservation.OwnerId, "instance", *i.InstanceId)
+				if i.InstanceId == nil {
+					continue
+				}
+
+				arn := BuildArn("ec2", c.region, accountId, "instance", *i.InstanceId)
+
+				// Defensivos: cualquiera de estos campos puede venir nil.
+				state := ""
+				if i.State != nil {
+					state = string(i.State.Name)
+				}
+
+				vpcId := ""
+				if i.VpcId != nil {
+					vpcId = *i.VpcId
+				}
+
+				subnetId := ""
+				if i.SubnetId != nil {
+					subnetId = *i.SubnetId
+				}
+
+				launchTime := ""
+				if i.LaunchTime != nil {
+					launchTime = i.LaunchTime.UTC().Format(time.RFC3339)
+				}
+
+				node := models.EC2Instance{
+					AWSResource: models.AWSResource{
+						Arn:       arn,
+						AccountId: accountId,
+					},
+					InstanceId:   *i.InstanceId,
+					InstanceType: string(i.InstanceType),
+					State:        state,
+					VpcId:        vpcId,
+					SubnetId:     subnetId,
+					Region:       c.region,
+					LaunchTime:   launchTime,
+				}
+
 				_, err := session.Run(ctx,
-					` Merge (i:EC2Instance {arn: $arn})
-						Set i.id = $id, i.type = $type, i.state = $state, i.launchTime = $launchTime`,
+					`MERGE (e:EC2Instance:AWSResource {arn: $arn})
+					 SET e.instanceId   = $instanceId,
+					     e.instanceType = $instanceType,
+					     e.state        = $state,
+					     e.vpcId        = $vpcId,
+					     e.subnetId     = $subnetId,
+					     e.region       = $region,
+					     e.accountId    = $accountId,
+					     e.launchTime   = $launchTime`,
 					map[string]any{
-						"arn":        arn,
-						"id":         *i.InstanceId,
-						"type":       string(i.InstanceType),
-						"state":      string(i.State.Name),
-						"launchTime": i.LaunchTime,
+						"arn":          node.Arn,
+						"instanceId":   node.InstanceId,
+						"instanceType": node.InstanceType,
+						"state":        node.State,
+						"vpcId":        node.VpcId,
+						"subnetId":     node.SubnetId,
+						"region":       node.Region,
+						"accountId":    node.AccountId,
+						"launchTime":   node.LaunchTime,
 					},
 				)
-
 				if err != nil {
-					log.Printf("neo4j error for: %s: %v", *i.InstanceId, err)
+					log.Printf("neo4j error for %s: %v", node.InstanceId, err)
 				}
 			}
 		}
@@ -61,57 +120,64 @@ func (c *EC2Crawler) IngestRelations(ctx context.Context, driver neo4j.DriverWit
 
 	for paginator.HasMorePages() {
 		page, err := paginator.NextPage(ctx)
-
 		if err != nil {
-			return err
+			return fmt.Errorf("listing ec2 instances for relations: %w", err)
 		}
 
 		for _, reservation := range page.Reservations {
+			if reservation.OwnerId == nil {
+				continue
+			}
+			accountId := *reservation.OwnerId
+
 			for _, i := range reservation.Instances {
-				arn := BuildArn("ec2", c.region, *reservation.OwnerId, "instance", *i.InstanceId)
+				if i.InstanceId == nil {
+					continue
+				}
+				instanceArn := BuildArn("ec2", c.region, accountId, "instance", *i.InstanceId)
 
 				// EC2 -> VPC
 				if i.VpcId != nil {
+					vpcArn := BuildArn("ec2", c.region, accountId, "vpc", *i.VpcId)
+
+					rel := models.BelongsToRelation{
+						ChildArn:  instanceArn,
+						ParentArn: vpcArn,
+					}
+
 					if _, err := session.Run(ctx,
-						`Match (i:EC2Instance {arn: $arn})
-						Match (v:VPC {vpcId: $vpcId})
-						Merge (i)-[BELONGS_TO]->(v)`,
-						map[string]any{"arn": arn, "vpcId": *i.VpcId},
+						`MATCH (e:EC2Instance:AWSResource {arn: $childArn})
+		 					MATCH (v:VPC:AWSResource {arn: $parentArn})
+		 					MERGE (e)-[:BELONGS_TO]->(v)`,
+						map[string]any{
+							"childArn":  rel.ChildArn,
+							"parentArn": rel.ParentArn,
+						},
 					); err != nil {
 						log.Printf("BELONGS_TO error for %s: %v", *i.InstanceId, err)
 					}
 				}
 
-				// EC2 -> IAM Role
-				if i.IamInstanceProfile != nil {
+				// EC2 -> Subnet
+				if i.SubnetId != nil {
+					subnetArn := BuildArn("ec2", c.region, accountId, "subnet", *i.SubnetId)
+
 					if _, err := session.Run(ctx,
-						`Match(i:EC2Instance {arn: $arn})
-						Match (r:IAMRole {arn: $roleArn})
-						Merge (i)-[:ASSUMES_ROLE]->(r)`,
-						map[string]any{"arn": arn, "roleArn": *i.IamInstanceProfile.Arn},
+						`MATCH (e:EC2Instance:AWSResource {arn: $instanceArn})
+		 					MATCH (s:Subnet:AWSResource {arn: $subnetArn})
+		 					MERGE (e)-[:USES_SUBNET]->(s)`,
+						map[string]any{
+							"instanceArn": instanceArn,
+							"subnetArn":   subnetArn,
+						},
 					); err != nil {
-						log.Printf("ASSUMES_ROLE error for %s: %v", *i.InstanceId, err)
+						log.Printf("USES_SUBNET error for %s: %v", *i.InstanceId, err)
 					}
 				}
 
-				// EC2 -> EBS Volumes (relación embedded en BlockedDevicedMappings)
-				for _, bdm := range i.BlockDeviceMappings {
-					if bdm.Ebs != nil {
-						volArn := BuildArn("ec2", c.region, *reservation.OwnerId, "volume", *bdm.Ebs.VolumeId)
-						if _, err := session.Run(ctx,
-							`Match (i:EC2Instance {arn: $arn})
-							Match (v:EBSVolume {arn: $volArn})
-							Merge (i)-[:HAS_VOLUME {device: $device}]->(v)`,
-							map[string]any{
-								"arn":    arn,
-								"volArn": volArn,
-								"device": *bdm.DeviceName,
-							},
-						); err != nil {
-							log.Printf("HAS_VOLUME error for %s/%s: %v", *i.InstanceId, *bdm.Ebs.VolumeId, err)
-						}
-					}
-				}
+				// TODO post-MVP: EC2 -> IAM Role (necesita IAMCrawler)
+				// TODO post-MVP: EC2 -> EBS Volume (necesita EBSCrawler)
+				// TODO post-MVP: EC2 -> SecurityGroup (necesita SecurityGroupCrawler)
 			}
 		}
 	}
