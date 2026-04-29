@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sync"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -13,8 +14,17 @@ import (
 	"infra-diagram/internal/models"
 )
 
+type bucketCache struct {
+	buckets []s3types.Bucket
+	ownerId string
+}
+
 type S3Crawler struct {
 	client *s3.Client
+
+	bucketsOnce  sync.Once
+	s3BucketList bucketCache
+	bucketErr    error
 }
 
 func NewS3Crawler(client *s3.Client) *S3Crawler {
@@ -30,28 +40,47 @@ func normalizeS3Region(loc s3types.BucketLocationConstraint) string {
 	return string(loc)
 }
 
+func (c *S3Crawler) loadBuckets(ctx context.Context) (bucketCache, error) {
+	c.bucketsOnce.Do(func() {
+		// ListBuckets no pagina (a diferencia de Lambda)
+		resp, err := c.client.ListBuckets(ctx, &s3.ListBucketsInput{})
+
+		if err != nil {
+			c.bucketErr = fmt.Errorf("listing s3 buckets: %w", err)
+			return
+		}
+
+		// El accountId no viene en ListBuckets — lo extraemos del Owner de la respuesta.
+		// Owner.ID es el canonical ID, no el accountId numérico, así que lo dejamos vacío
+		// por ahora. Si lo necesitas, se puede obtener con sts:GetCallerIdentity una vez
+		// al inicio del crawler. Para el MVP lo omitimos.
+		c.s3BucketList.ownerId = ""
+		if resp.Owner != nil && resp.Owner.ID != nil {
+			// Nota: esto es el canonical user ID, no el accountId numérico.
+			// Para diagramación es suficiente como identificador único de cuenta.
+			c.s3BucketList.ownerId = *resp.Owner.ID
+		}
+
+		c.s3BucketList.buckets = append(c.s3BucketList.buckets, resp.Buckets...)
+	})
+
+	return c.s3BucketList, c.bucketErr
+}
+
 func (c *S3Crawler) IngestNodes(ctx context.Context, driver neo4j.DriverWithContext) error {
 	session := driver.NewSession(ctx, neo4j.SessionConfig{AccessMode: neo4j.AccessModeWrite})
 	defer session.Close(ctx)
 
-	// ListBuckets no es paginado en S3 — devuelve todos los buckets de la cuenta de una vez.
-	resp, err := c.client.ListBuckets(ctx, &s3.ListBucketsInput{})
+	bucketResponse, err := c.loadBuckets(ctx)
+
 	if err != nil {
-		return fmt.Errorf("listing s3 buckets: %w", err)
+		return err
 	}
 
-	// El accountId no viene en ListBuckets — lo extraemos del Owner de la respuesta.
-	// Owner.ID es el canonical ID, no el accountId numérico, así que lo dejamos vacío
-	// por ahora. Si lo necesitas, se puede obtener con sts:GetCallerIdentity una vez
-	// al inicio del crawler. Para el MVP lo omitimos.
-	accountId := ""
-	if resp.Owner != nil && resp.Owner.ID != nil {
-		// Nota: esto es el canonical user ID, no el accountId numérico.
-		// Para diagramación es suficiente como identificador único de cuenta.
-		accountId = *resp.Owner.ID
-	}
+	accountId := bucketResponse.ownerId
+	bucketList := bucketResponse.buckets
 
-	for _, b := range resp.Buckets {
+	for _, b := range bucketList {
 		bucketName := aws.ToString(b.Name)
 
 		// Cada bucket vive en una región específica — hay que preguntarla.
@@ -108,12 +137,14 @@ func (c *S3Crawler) ingestNotifications(ctx context.Context, driver neo4j.Driver
 	session := driver.NewSession(ctx, neo4j.SessionConfig{AccessMode: neo4j.AccessModeWrite})
 	defer session.Close(ctx)
 
-	resp, err := c.client.ListBuckets(ctx, &s3.ListBucketsInput{})
-	if err != nil {
-		return fmt.Errorf("listing buckets for notifications: %w", err)
-	}
+	bucketResponse, err := c.loadBuckets(ctx)
 
-	for _, b := range resp.Buckets {
+	if err != nil {
+		return err
+	}
+	bucketList := bucketResponse.buckets
+
+	for _, b := range bucketList {
 		bucketName := aws.ToString(b.Name)
 		bucketArn := BuildS3Arn(bucketName)
 

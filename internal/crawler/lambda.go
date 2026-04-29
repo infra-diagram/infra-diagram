@@ -5,81 +5,105 @@ import (
 	"fmt"
 	"infra-diagram/internal/models"
 	"log"
+	"sync"
 
 	"github.com/aws/aws-sdk-go-v2/service/lambda"
+	lambdatypes "github.com/aws/aws-sdk-go-v2/service/lambda/types"
 	"github.com/neo4j/neo4j-go-driver/v5/neo4j"
 )
 
 type LambdaCrawler struct {
 	client *lambda.Client
+
+	// Cache de las funciones para evitar listar 2 veces
+	// Sync.Once garantiza que la carga ocurre exactamente 1 vez
+	// Incluso si IngestNodes e IngestRelations se llaman concurrentemente
+	functionsOnce sync.Once
+	functions     []lambdatypes.FunctionConfiguration
+	functionsErr  error
 }
 
 func NewLambdaCrawler(client *lambda.Client) *LambdaCrawler {
 	return &LambdaCrawler{client: client}
 }
 
+func (c *LambdaCrawler) loadFunctions(ctx context.Context) ([]lambdatypes.FunctionConfiguration, error) {
+	c.functionsOnce.Do(func() {
+		paginator := lambda.NewListFunctionsPaginator(c.client, &lambda.ListFunctionsInput{})
+		for paginator.HasMorePages() {
+			page, err := paginator.NextPage(ctx)
+
+			if err != nil {
+				c.functionsErr = fmt.Errorf("listing lambdas: %w", err)
+				return
+			}
+			c.functions = append(c.functions, page.Functions...)
+		}
+	})
+
+	return c.functions, c.functionsErr
+}
+
 func (c *LambdaCrawler) IngestNodes(ctx context.Context, driver neo4j.DriverWithContext) error {
 	session := driver.NewSession(ctx, neo4j.SessionConfig{AccessMode: neo4j.AccessModeWrite})
 	defer session.Close(ctx)
 
-	paginator := lambda.NewListFunctionsPaginator(c.client, &lambda.ListFunctionsInput{})
+	functions, err := c.loadFunctions(ctx)
 
-	for paginator.HasMorePages() {
-		page, err := paginator.NextPage(ctx)
+	if err != nil {
+		return err
+	}
+
+	for _, fn := range functions {
+		region, err := GetRegionFromArn(*fn.FunctionArn)
 		if err != nil {
-			return fmt.Errorf("listing lambdas: %w", err)
+			log.Printf("skipping %s: %v", *fn.FunctionArn, err)
+			continue
 		}
 
-		for _, fn := range page.Functions {
-			region, err := GetRegionFromArn(*fn.FunctionArn)
-			if err != nil {
-				log.Printf("skipping %s: %v", *fn.FunctionArn, err)
-				continue
-			}
+		accountId, err := GetAccountIdFromArn(*fn.FunctionArn)
+		if err != nil {
+			log.Printf("skipping %s: %v", *fn.FunctionArn, err)
+			continue
+		}
 
-			accountId, err := GetAccountIdFromArn(*fn.FunctionArn)
-			if err != nil {
-				log.Printf("skipping %s: %v", *fn.FunctionArn, err)
-				continue
-			}
+		vpcId := ""
+		if fn.VpcConfig != nil && fn.VpcConfig.VpcId != nil {
+			vpcId = *fn.VpcConfig.VpcId
+		}
 
-			vpcId := ""
-			if fn.VpcConfig != nil && fn.VpcConfig.VpcId != nil {
-				vpcId = *fn.VpcConfig.VpcId
-			}
+		node := models.Function{
+			AWSResource: models.AWSResource{
+				Arn:       *fn.FunctionArn,
+				AccountId: accountId,
+			},
+			Name:    *fn.FunctionName,
+			Runtime: string(fn.Runtime),
+			Region:  region,
+			VpcId:   vpcId,
+		}
 
-			node := models.Function{
-				AWSResource: models.AWSResource{
-					Arn:       *fn.FunctionArn,
-					AccountId: accountId,
-				},
-				Name:    *fn.FunctionName,
-				Runtime: string(fn.Runtime),
-				Region:  region,
-				VpcId:   vpcId,
-			}
-
-			_, err = session.Run(ctx,
-				`MERGE (f:Function:AWSResource {arn: $arn})
-				 SET f.name      = $name,
-				     f.runtime   = $runtime,
-				     f.region    = $region,
-				     f.accountId = $accountId,
-				     f.vpcId     = $vpcId`,
-				map[string]any{
-					"arn":       node.Arn,
-					"name":      node.Name,
-					"runtime":   node.Runtime,
-					"region":    node.Region,
-					"accountId": node.AccountId,
-					"vpcId":     node.VpcId,
-				},
-			)
-			if err != nil {
-				log.Printf("neo4j error for %s: %v", node.Name, err)
-			}
+		_, err = session.Run(ctx,
+			`MERGE (f:Function:AWSResource {arn: $arn})
+			 SET f.name      = $name,
+					 f.runtime   = $runtime,
+					 f.region    = $region,
+					 f.accountId = $accountId,
+					 f.vpcId     = $vpcId`,
+			map[string]any{
+				"arn":       node.Arn,
+				"name":      node.Name,
+				"runtime":   node.Runtime,
+				"region":    node.Region,
+				"accountId": node.AccountId,
+				"vpcId":     node.VpcId,
+			},
+		)
+		if err != nil {
+			log.Printf("neo4j error for %s: %v", node.Name, err)
 		}
 	}
+
 	return nil
 }
 
@@ -138,66 +162,64 @@ func (c *LambdaCrawler) ingestVPCRelations(ctx context.Context, driver neo4j.Dri
 	session := driver.NewSession(ctx, neo4j.SessionConfig{AccessMode: neo4j.AccessModeWrite})
 	defer session.Close(ctx)
 
-	paginator := lambda.NewListFunctionsPaginator(c.client, &lambda.ListFunctionsInput{})
+	functions, err := c.loadFunctions(ctx)
 
-	for paginator.HasMorePages() {
-		page, err := paginator.NextPage(ctx)
-		if err != nil {
-			return fmt.Errorf("listing lambdas for vpc relations: %w", err)
+	if err != nil {
+		return err
+	}
+
+	for _, fn := range functions {
+		if fn.VpcConfig == nil || fn.VpcConfig.VpcId == nil {
+			continue
 		}
 
-		for _, fn := range page.Functions {
-			if fn.VpcConfig == nil || fn.VpcConfig.VpcId == nil {
-				continue
-			}
+		region, err := GetRegionFromArn(*fn.FunctionArn)
+		if err != nil {
+			log.Printf("skipping vpc relation for %s: %v", *fn.FunctionArn, err)
+			continue
+		}
 
-			region, err := GetRegionFromArn(*fn.FunctionArn)
-			if err != nil {
-				log.Printf("skipping vpc relation for %s: %v", *fn.FunctionArn, err)
-				continue
-			}
+		accountId, err := GetAccountIdFromArn(*fn.FunctionArn)
+		if err != nil {
+			log.Printf("skipping vpc relation for %s: %v", *fn.FunctionArn, err)
+			continue
+		}
 
-			accountId, err := GetAccountIdFromArn(*fn.FunctionArn)
-			if err != nil {
-				log.Printf("skipping vpc relation for %s: %v", *fn.FunctionArn, err)
-				continue
-			}
+		vpcArn := BuildArn("ec2", region, accountId, "vpc", *fn.VpcConfig.VpcId)
 
-			vpcArn := BuildArn("ec2", region, accountId, "vpc", *fn.VpcConfig.VpcId)
+		rel := models.BelongsToRelation{
+			ChildArn:  *fn.FunctionArn,
+			ParentArn: vpcArn,
+		}
 
-			rel := models.BelongsToRelation{
-				ChildArn:  *fn.FunctionArn,
-				ParentArn: vpcArn,
-			}
+		if _, err := session.Run(ctx,
+			`MATCH (f:Function:AWSResource {arn: $childArn})
+			 MATCH (v:VPC:AWSResource {arn: $parentArn})
+			 MERGE (f)-[:DEPLOYED_IN]->(v)`,
+			map[string]any{
+				"childArn":  rel.ChildArn,
+				"parentArn": rel.ParentArn,
+			},
+		); err != nil {
+			log.Printf("DEPLOYED_IN error for %s: %v", *fn.FunctionName, err)
+		}
+
+		for _, subnetId := range fn.VpcConfig.SubnetIds {
+			subnetArn := BuildArn("ec2", region, accountId, "subnet", subnetId)
 
 			if _, err := session.Run(ctx,
-				`MATCH (f:Function:AWSResource {arn: $childArn})
-				 MATCH (v:VPC:AWSResource {arn: $parentArn})
-				 MERGE (f)-[:DEPLOYED_IN]->(v)`,
+				`MATCH (f:Function:AWSResource {arn: $fnArn})
+				 MATCH (s:Subnet:AWSResource {arn: $subnetArn})
+				 MERGE (f)-[:USES_SUBNET]->(s)`,
 				map[string]any{
-					"childArn":  rel.ChildArn,
-					"parentArn": rel.ParentArn,
+					"fnArn":     *fn.FunctionArn,
+					"subnetArn": subnetArn,
 				},
 			); err != nil {
-				log.Printf("DEPLOYED_IN error for %s: %v", *fn.FunctionName, err)
-			}
-
-			for _, subnetId := range fn.VpcConfig.SubnetIds {
-				subnetArn := BuildArn("ec2", region, accountId, "subnet", subnetId)
-
-				if _, err := session.Run(ctx,
-					`MATCH (f:Function:AWSResource {arn: $fnArn})
-					 MATCH (s:Subnet:AWSResource {arn: $subnetArn})
-					 MERGE (f)-[:USES_SUBNET]->(s)`,
-					map[string]any{
-						"fnArn":     *fn.FunctionArn,
-						"subnetArn": subnetArn,
-					},
-				); err != nil {
-					log.Printf("USES_SUBNET error for %s/%s: %v", *fn.FunctionName, subnetId, err)
-				}
+				log.Printf("USES_SUBNET error for %s/%s: %v", *fn.FunctionName, subnetId, err)
 			}
 		}
 	}
+
 	return nil
 }
