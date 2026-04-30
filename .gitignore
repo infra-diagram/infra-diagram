@@ -21,7 +21,9 @@ go.work.sum
 
 # --- Terraform ---
 # Directorio de trabajo local (proveedores y módulos)
-.terraform/
+.terraform
+.terraform.lock.hcl
+.terraform/*
 
 # Archivos de estado (CONTIENEN DATOS SENSIBLES)
 *.tfstate
