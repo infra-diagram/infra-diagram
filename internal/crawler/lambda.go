@@ -3,21 +3,20 @@ package crawler
 import (
 	"context"
 	"fmt"
-	"infra-diagram/internal/models"
 	"log"
 	"sync"
 
 	"github.com/aws/aws-sdk-go-v2/service/lambda"
 	lambdatypes "github.com/aws/aws-sdk-go-v2/service/lambda/types"
 	"github.com/neo4j/neo4j-go-driver/v5/neo4j"
+
+	"infra-diagram/internal/models"
 )
 
 type LambdaCrawler struct {
 	client *lambda.Client
 
-	// Cache de las funciones para evitar listar 2 veces
-	// Sync.Once garantiza que la carga ocurre exactamente 1 vez
-	// Incluso si IngestNodes e IngestRelations se llaman concurrentemente
+	// Cache de funciones para evitar listar dos veces.
 	functionsOnce sync.Once
 	functions     []lambdatypes.FunctionConfiguration
 	functionsErr  error
@@ -27,12 +26,13 @@ func NewLambdaCrawler(client *lambda.Client) *LambdaCrawler {
 	return &LambdaCrawler{client: client}
 }
 
+// loadFunctions carga las Lambdas de AWS la primera vez que se llama.
+// Las llamadas subsiguientes devuelven la lista cacheada.
 func (c *LambdaCrawler) loadFunctions(ctx context.Context) ([]lambdatypes.FunctionConfiguration, error) {
 	c.functionsOnce.Do(func() {
 		paginator := lambda.NewListFunctionsPaginator(c.client, &lambda.ListFunctionsInput{})
 		for paginator.HasMorePages() {
 			page, err := paginator.NextPage(ctx)
-
 			if err != nil {
 				c.functionsErr = fmt.Errorf("listing lambdas: %w", err)
 				return
@@ -40,7 +40,6 @@ func (c *LambdaCrawler) loadFunctions(ctx context.Context) ([]lambdatypes.Functi
 			c.functions = append(c.functions, page.Functions...)
 		}
 	})
-
 	return c.functions, c.functionsErr
 }
 
@@ -49,7 +48,6 @@ func (c *LambdaCrawler) IngestNodes(ctx context.Context, driver neo4j.DriverWith
 	defer session.Close(ctx)
 
 	functions, err := c.loadFunctions(ctx)
-
 	if err != nil {
 		return err
 	}
@@ -86,10 +84,10 @@ func (c *LambdaCrawler) IngestNodes(ctx context.Context, driver neo4j.DriverWith
 		_, err = session.Run(ctx,
 			`MERGE (f:Function:AWSResource {arn: $arn})
 			 SET f.name      = $name,
-					 f.runtime   = $runtime,
-					 f.region    = $region,
-					 f.accountId = $accountId,
-					 f.vpcId     = $vpcId`,
+			     f.runtime   = $runtime,
+			     f.region    = $region,
+			     f.accountId = $accountId,
+			     f.vpcId     = $vpcId`,
 			map[string]any{
 				"arn":       node.Arn,
 				"name":      node.Name,
@@ -103,7 +101,6 @@ func (c *LambdaCrawler) IngestNodes(ctx context.Context, driver neo4j.DriverWith
 			log.Printf("neo4j error for %s: %v", node.Name, err)
 		}
 	}
-
 	return nil
 }
 
@@ -163,7 +160,6 @@ func (c *LambdaCrawler) ingestVPCRelations(ctx context.Context, driver neo4j.Dri
 	defer session.Close(ctx)
 
 	functions, err := c.loadFunctions(ctx)
-
 	if err != nil {
 		return err
 	}
@@ -220,6 +216,5 @@ func (c *LambdaCrawler) ingestVPCRelations(ctx context.Context, driver neo4j.Dri
 			}
 		}
 	}
-
 	return nil
 }

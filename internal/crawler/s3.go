@@ -14,25 +14,97 @@ import (
 	"infra-diagram/internal/models"
 )
 
-type bucketCache struct {
-	buckets []s3types.Bucket
-	ownerId string
-}
-
 type S3Crawler struct {
-	client *s3.Client
+	baseCfg aws.Config
 
-	bucketsOnce  sync.Once
-	s3BucketList bucketCache
-	bucketErr    error
+	// Cache de clientes S3 por región. S3 requiere endpoint regional para
+	// algunas operaciones (GetBucketNotificationConfiguration, etc.) aunque
+	// ListBuckets sea global.
+	clientsMu sync.Mutex
+	clients   map[string]*s3.Client
+
+	// Cache de buckets + accountId — listBuckets es la primera llamada.
+	bucketsOnce sync.Once
+	buckets     []s3types.Bucket
+	accountId   string
+	bucketsErr  error
+
+	// Cache de region por bucket — evita llamar GetBucketLocation dos veces
+	// (una en IngestNodes, otra en ingestNotifications).
+	regionsMu sync.Mutex
+	regions   map[string]string
 }
 
-func NewS3Crawler(client *s3.Client) *S3Crawler {
-	return &S3Crawler{client: client}
+func NewS3Crawler(cfg aws.Config) *S3Crawler {
+	return &S3Crawler{
+		baseCfg: cfg,
+		clients: make(map[string]*s3.Client),
+		regions: make(map[string]string),
+	}
+}
+
+// clientForRegion devuelve un cliente S3 configurado para una región
+// específica. Se crea perezosamente la primera vez que se necesita.
+func (c *S3Crawler) clientForRegion(region string) *s3.Client {
+	c.clientsMu.Lock()
+	defer c.clientsMu.Unlock()
+
+	if cli, ok := c.clients[region]; ok {
+		return cli
+	}
+	cli := s3.NewFromConfig(c.baseCfg, func(o *s3.Options) {
+		o.Region = region
+	})
+	c.clients[region] = cli
+	return cli
+}
+
+// loadBuckets lista todos los buckets de la cuenta y guarda el resultado.
+// ListBuckets es global — funciona desde cualquier región.
+func (c *S3Crawler) loadBuckets(ctx context.Context) ([]s3types.Bucket, string, error) {
+	c.bucketsOnce.Do(func() {
+		client := c.clientForRegion(c.baseCfg.Region)
+		resp, err := client.ListBuckets(ctx, &s3.ListBucketsInput{})
+		if err != nil {
+			c.bucketsErr = fmt.Errorf("listing s3 buckets: %w", err)
+			return
+		}
+		c.buckets = resp.Buckets
+		if resp.Owner != nil && resp.Owner.ID != nil {
+			c.accountId = *resp.Owner.ID
+		}
+	})
+	return c.buckets, c.accountId, c.bucketsErr
+}
+
+// regionForBucket devuelve la región donde vive un bucket. Cachea el
+// resultado para evitar llamadas duplicadas.
+func (c *S3Crawler) regionForBucket(ctx context.Context, bucketName string) (string, error) {
+	c.regionsMu.Lock()
+	if region, ok := c.regions[bucketName]; ok {
+		c.regionsMu.Unlock()
+		return region, nil
+	}
+	c.regionsMu.Unlock()
+
+	client := c.clientForRegion(c.baseCfg.Region)
+	locResp, err := client.GetBucketLocation(ctx, &s3.GetBucketLocationInput{
+		Bucket: &bucketName,
+	})
+	if err != nil {
+		return "", err
+	}
+	region := normalizeS3Region(locResp.LocationConstraint)
+
+	c.regionsMu.Lock()
+	c.regions[bucketName] = region
+	c.regionsMu.Unlock()
+
+	return region, nil
 }
 
 // normalizeS3Region maneja el caso especial de us-east-1, donde la API
-// devuelve un string vacío en LocationConstraint en lugar del nombre real.
+// devuelve string vacío en lugar del nombre de la región.
 func normalizeS3Region(loc s3types.BucketLocationConstraint) string {
 	if loc == "" {
 		return "us-east-1"
@@ -40,59 +112,24 @@ func normalizeS3Region(loc s3types.BucketLocationConstraint) string {
 	return string(loc)
 }
 
-func (c *S3Crawler) loadBuckets(ctx context.Context) (bucketCache, error) {
-	c.bucketsOnce.Do(func() {
-		// ListBuckets no pagina (a diferencia de Lambda)
-		resp, err := c.client.ListBuckets(ctx, &s3.ListBucketsInput{})
-
-		if err != nil {
-			c.bucketErr = fmt.Errorf("listing s3 buckets: %w", err)
-			return
-		}
-
-		// El accountId no viene en ListBuckets — lo extraemos del Owner de la respuesta.
-		// Owner.ID es el canonical ID, no el accountId numérico, así que lo dejamos vacío
-		// por ahora. Si lo necesitas, se puede obtener con sts:GetCallerIdentity una vez
-		// al inicio del crawler. Para el MVP lo omitimos.
-		c.s3BucketList.ownerId = ""
-		if resp.Owner != nil && resp.Owner.ID != nil {
-			// Nota: esto es el canonical user ID, no el accountId numérico.
-			// Para diagramación es suficiente como identificador único de cuenta.
-			c.s3BucketList.ownerId = *resp.Owner.ID
-		}
-
-		c.s3BucketList.buckets = append(c.s3BucketList.buckets, resp.Buckets...)
-	})
-
-	return c.s3BucketList, c.bucketErr
-}
-
 func (c *S3Crawler) IngestNodes(ctx context.Context, driver neo4j.DriverWithContext) error {
 	session := driver.NewSession(ctx, neo4j.SessionConfig{AccessMode: neo4j.AccessModeWrite})
 	defer session.Close(ctx)
 
-	bucketResponse, err := c.loadBuckets(ctx)
-
+	buckets, accountId, err := c.loadBuckets(ctx)
 	if err != nil {
 		return err
 	}
 
-	accountId := bucketResponse.ownerId
-	bucketList := bucketResponse.buckets
-
-	for _, b := range bucketList {
+	for _, b := range buckets {
 		bucketName := aws.ToString(b.Name)
 
-		// Cada bucket vive en una región específica — hay que preguntarla.
-		locResp, err := c.client.GetBucketLocation(ctx, &s3.GetBucketLocationInput{
-			Bucket: b.Name,
-		})
+		region, err := c.regionForBucket(ctx, bucketName)
 		if err != nil {
 			log.Printf("getting location for bucket %s: %v", bucketName, err)
 			continue
 		}
 
-		region := normalizeS3Region(locResp.LocationConstraint)
 		arn := BuildS3Arn(bucketName)
 
 		node := models.S3Bucket{
@@ -131,40 +168,42 @@ func (c *S3Crawler) IngestRelations(ctx context.Context, driver neo4j.DriverWith
 	return nil
 }
 
-// ingestNotifications mapea las relaciones (S3Bucket)-[:NOTIFIES]->(Lambda)
-// que se configuran a nivel de bucket en S3 Event Notifications.
 func (c *S3Crawler) ingestNotifications(ctx context.Context, driver neo4j.DriverWithContext) error {
 	session := driver.NewSession(ctx, neo4j.SessionConfig{AccessMode: neo4j.AccessModeWrite})
 	defer session.Close(ctx)
 
-	bucketResponse, err := c.loadBuckets(ctx)
-
+	buckets, _, err := c.loadBuckets(ctx)
 	if err != nil {
 		return err
 	}
-	bucketList := bucketResponse.buckets
 
-	for _, b := range bucketList {
+	for _, b := range buckets {
 		bucketName := aws.ToString(b.Name)
 		bucketArn := BuildS3Arn(bucketName)
 
-		notifResp, err := c.client.GetBucketNotificationConfiguration(ctx,
-			&s3.GetBucketNotificationConfigurationInput{Bucket: b.Name},
-		)
+		// La región ya fue cacheada en IngestNodes — esto es un lookup,
+		// no una llamada de red.
+		region, err := c.regionForBucket(ctx, bucketName)
 		if err != nil {
-			log.Printf("getting notification config for %s: %v", bucketName, err)
+			log.Printf("getting region for %s: %v", bucketName, err)
 			continue
 		}
 
-		// Si el bucket no tiene notificaciones configuradas, los slices vienen vacíos
-		// (no nil necesariamente, pero len == 0). El range se salta solo en ese caso.
+		// Cliente regional para la operación que requiere endpoint específico.
+		regionalClient := c.clientForRegion(region)
+		notifResp, err := regionalClient.GetBucketNotificationConfiguration(ctx,
+			&s3.GetBucketNotificationConfigurationInput{Bucket: b.Name},
+		)
+		if err != nil {
+			log.Printf("getting notification config for %s (%s): %v", bucketName, region, err)
+			continue
+		}
+
 		for _, lambdaConfig := range notifResp.LambdaFunctionConfigurations {
 			if lambdaConfig.LambdaFunctionArn == nil {
 				continue
 			}
 
-			// Convertimos los Events del SDK ([]s3types.Event) a []string
-			// porque Neo4j no entiende tipos custom del SDK.
 			events := make([]string, 0, len(lambdaConfig.Events))
 			for _, e := range lambdaConfig.Events {
 				events = append(events, string(e))

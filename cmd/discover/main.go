@@ -8,7 +8,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/lambda"
-	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	neo4jdriver "github.com/neo4j/neo4j-go-driver/v5/neo4j"
 
@@ -67,7 +66,7 @@ func main() {
 		crawler.NewEC2Crawler(ec2Client, region),
 		crawler.NewLambdaCrawler(lambda.NewFromConfig(awsCfg)),
 		crawler.NewQueueCrawler(sqs.NewFromConfig(awsCfg)),
-		crawler.NewS3Crawler(s3.NewFromConfig(awsCfg)),
+		crawler.NewS3Crawler(awsCfg),
 	}
 	log.Printf("Initialized %d crawlers", len(crawlers))
 
