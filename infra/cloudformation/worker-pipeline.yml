@@ -1,0 +1,124 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Worker pipeline para infra-diagram - EventBridge -> SQS'
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: infra-diagram
+    Description: Prefijo para nombrar recursos
+
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, staging, prod]
+
+Resources:
+
+  # SQS Dead Letter Queue
+  WorkerDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub '${ProjectName}-worker-dlq'
+      MessageRetentionPeriod: 1209600  # 14 días
+      VisibilityTimeout: 60
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+
+  # SQS Queue principal
+  WorkerQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub '${ProjectName}-worker-queue'
+      MessageRetentionPeriod: 86400  # 1 día (dev)
+      VisibilityTimeout: 60
+      ReceiveMessageWaitTimeSeconds: 20  # long polling
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt WorkerDLQ.Arn
+        maxReceiveCount: 5
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+
+  # Permitir a EventBridge escribir a la queue
+  WorkerQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref WorkerQueue
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sqs:SendMessage
+            Resource: !GetAtt WorkerQueue.Arn
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !GetAtt WorkerRule.Arn
+
+  # EventBridge Rule
+  WorkerRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub '${ProjectName}-resource-changes'
+      Description: 'Captura eventos que crean, modifican o eliminan recursos AWS'
+      State: ENABLED
+      EventPattern:
+        source:
+          - aws.ec2
+          - aws.lambda
+          - aws.s3
+          - aws.sqs
+        detail-type:
+          - 'AWS API Call via CloudTrail'
+        detail:
+          eventName:
+            # EC2 / VPC / Subnet
+            - RunInstances
+            - TerminateInstances
+            - CreateVpc
+            - DeleteVpc
+            - CreateSubnet
+            - DeleteSubnet
+            # Lambda
+            - CreateFunction20150331
+            - DeleteFunction20150331
+            - UpdateFunctionConfiguration20150331v2
+            - CreateEventSourceMapping
+            - DeleteEventSourceMapping
+            - UpdateEventSourceMapping
+            # S3
+            - CreateBucket
+            - DeleteBucket
+            - PutBucketNotificationConfiguration
+            # SQS
+            - CreateQueue
+            - DeleteQueue
+      Targets:
+        - Arn: !GetAtt WorkerQueue.Arn
+          Id: WorkerQueueTarget
+
+Outputs:
+  QueueUrl:
+    Description: 'URL de la SQS queue principal'
+    Value: !Ref WorkerQueue
+    Export:
+      Name: !Sub '${AWS::StackName}-QueueUrl'
+
+  QueueArn:
+    Description: 'ARN de la queue principal'
+    Value: !GetAtt WorkerQueue.Arn
+
+  DLQUrl:
+    Description: 'URL del dead letter queue'
+    Value: !Ref WorkerDLQ
+
+  RuleArn:
+    Description: 'ARN de la EventBridge rule'
+    Value: !GetAtt WorkerRule.Arn
