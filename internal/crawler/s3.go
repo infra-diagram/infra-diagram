@@ -17,20 +17,14 @@ import (
 type S3Crawler struct {
 	baseCfg aws.Config
 
-	// Cache de clientes S3 por región. S3 requiere endpoint regional para
-	// algunas operaciones (GetBucketNotificationConfiguration, etc.) aunque
-	// ListBuckets sea global.
 	clientsMu sync.Mutex
 	clients   map[string]*s3.Client
 
-	// Cache de buckets + accountId — listBuckets es la primera llamada.
 	bucketsOnce sync.Once
 	buckets     []s3types.Bucket
 	accountId   string
 	bucketsErr  error
 
-	// Cache de region por bucket — evita llamar GetBucketLocation dos veces
-	// (una en IngestNodes, otra en ingestNotifications).
 	regionsMu sync.Mutex
 	regions   map[string]string
 }
@@ -43,8 +37,6 @@ func NewS3Crawler(cfg aws.Config) *S3Crawler {
 	}
 }
 
-// clientForRegion devuelve un cliente S3 configurado para una región
-// específica. Se crea perezosamente la primera vez que se necesita.
 func (c *S3Crawler) clientForRegion(region string) *s3.Client {
 	c.clientsMu.Lock()
 	defer c.clientsMu.Unlock()
@@ -59,8 +51,6 @@ func (c *S3Crawler) clientForRegion(region string) *s3.Client {
 	return cli
 }
 
-// loadBuckets lista todos los buckets de la cuenta y guarda el resultado.
-// ListBuckets es global — funciona desde cualquier región.
 func (c *S3Crawler) loadBuckets(ctx context.Context) ([]s3types.Bucket, string, error) {
 	c.bucketsOnce.Do(func() {
 		client := c.clientForRegion(c.baseCfg.Region)
@@ -77,8 +67,6 @@ func (c *S3Crawler) loadBuckets(ctx context.Context) ([]s3types.Bucket, string, 
 	return c.buckets, c.accountId, c.bucketsErr
 }
 
-// regionForBucket devuelve la región donde vive un bucket. Cachea el
-// resultado para evitar llamadas duplicadas.
 func (c *S3Crawler) regionForBucket(ctx context.Context, bucketName string) (string, error) {
 	c.regionsMu.Lock()
 	if region, ok := c.regions[bucketName]; ok {
@@ -92,7 +80,7 @@ func (c *S3Crawler) regionForBucket(ctx context.Context, bucketName string) (str
 		Bucket: &bucketName,
 	})
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("getting location for %s: %w", bucketName, err)
 	}
 	region := normalizeS3Region(locResp.LocationConstraint)
 
@@ -103,14 +91,16 @@ func (c *S3Crawler) regionForBucket(ctx context.Context, bucketName string) (str
 	return region, nil
 }
 
-// normalizeS3Region maneja el caso especial de us-east-1, donde la API
-// devuelve string vacío en lugar del nombre de la región.
 func normalizeS3Region(loc s3types.BucketLocationConstraint) string {
 	if loc == "" {
 		return "us-east-1"
 	}
 	return string(loc)
 }
+
+// =============================================================================
+// FASE 1 — Nodos
+// =============================================================================
 
 func (c *S3Crawler) IngestNodes(ctx context.Context, driver neo4j.DriverWithContext) error {
 	session := driver.NewSession(ctx, neo4j.SessionConfig{AccessMode: neo4j.AccessModeWrite})
@@ -123,52 +113,76 @@ func (c *S3Crawler) IngestNodes(ctx context.Context, driver neo4j.DriverWithCont
 
 	for _, b := range buckets {
 		bucketName := aws.ToString(b.Name)
-
-		region, err := c.regionForBucket(ctx, bucketName)
-		if err != nil {
-			log.Printf("getting location for bucket %s: %v", bucketName, err)
+		if err := c.upsertNodeFromBucket(ctx, session, bucketName, accountId); err != nil {
+			log.Printf("ingesting bucket: %v", err)
 			continue
 		}
-
-		arn := BuildS3Arn(bucketName)
-
-		node := models.S3Bucket{
-			AWSResource: models.AWSResource{
-				Arn:       arn,
-				AccountId: accountId,
-			},
-			Name:   bucketName,
-			Region: region,
-		}
-
-		_, err = session.Run(ctx,
-			`MERGE (b:S3Bucket:AWSResource {arn: $arn})
-			 SET b.name      = $name,
-			     b.region    = $region,
-			     b.accountId = $accountId`,
-			map[string]any{
-				"arn":       node.Arn,
-				"name":      node.Name,
-				"region":    node.Region,
-				"accountId": node.AccountId,
-			},
-		)
-		if err != nil {
-			log.Printf("neo4j error for bucket %s: %v", bucketName, err)
-		}
 	}
-
 	return nil
 }
+
+// IngestSingle ingiere SOLO el nodo de un bucket por su nombre.
+// No toca relaciones — para eso usa RebuildRelations.
+func (c *S3Crawler) IngestSingle(ctx context.Context, session neo4j.SessionWithContext, bucketName string) error {
+	// Para single, el accountId no lo tenemos cacheado garantizado, así que
+	// lo obtenemos de loadBuckets si está disponible. Si no, va vacío y se
+	// llenará en el siguiente discovery.
+	_, accountId, err := c.loadBuckets(ctx)
+	if err != nil {
+		// No falla — podemos ingestar sin accountId
+		log.Printf("could not load accountId for bucket %s: %v", bucketName, err)
+	}
+	return c.upsertNodeFromBucket(ctx, session, bucketName, accountId)
+}
+
+func (c *S3Crawler) IngestSingleWithDriver(ctx context.Context, driver neo4j.DriverWithContext, bucketName string) error {
+	session := driver.NewSession(ctx, neo4j.SessionConfig{AccessMode: neo4j.AccessModeWrite})
+	defer session.Close(ctx)
+	return c.IngestSingle(ctx, session, bucketName)
+}
+
+// upsertNodeFromBucket hace solo el MERGE del nodo. Comparte lógica entre
+// IngestNodes (bulk) e IngestSingle (puntual).
+func (c *S3Crawler) upsertNodeFromBucket(ctx context.Context, session neo4j.SessionWithContext, bucketName, accountId string) error {
+	region, err := c.regionForBucket(ctx, bucketName)
+	if err != nil {
+		return fmt.Errorf("resolving region for %s: %w", bucketName, err)
+	}
+
+	arn := BuildS3Arn(bucketName)
+
+	node := models.S3Bucket{
+		AWSResource: models.AWSResource{
+			Arn:       arn,
+			AccountId: accountId,
+		},
+		Name:   bucketName,
+		Region: region,
+	}
+
+	_, err = session.Run(ctx,
+		`MERGE (b:S3Bucket:AWSResource {arn: $arn})
+		 SET b.name      = $name,
+		     b.region    = $region,
+		     b.accountId = $accountId`,
+		map[string]any{
+			"arn":       node.Arn,
+			"name":      node.Name,
+			"region":    node.Region,
+			"accountId": node.AccountId,
+		},
+	)
+	if err != nil {
+		return fmt.Errorf("merging bucket %s: %w", bucketName, err)
+	}
+	return nil
+}
+
+// =============================================================================
+// FASE 2 — Relaciones
+// =============================================================================
 
 func (c *S3Crawler) IngestRelations(ctx context.Context, driver neo4j.DriverWithContext) error {
-	if err := c.ingestNotifications(ctx, driver); err != nil {
-		return err
-	}
-	return nil
-}
-
-func (c *S3Crawler) ingestNotifications(ctx context.Context, driver neo4j.DriverWithContext) error {
 	session := driver.NewSession(ctx, neo4j.SessionConfig{AccessMode: neo4j.AccessModeWrite})
 	defer session.Close(ctx)
 
@@ -179,58 +193,100 @@ func (c *S3Crawler) ingestNotifications(ctx context.Context, driver neo4j.Driver
 
 	for _, b := range buckets {
 		bucketName := aws.ToString(b.Name)
-		bucketArn := BuildS3Arn(bucketName)
+		if err := c.rebuildNotificationsFromBucket(ctx, session, bucketName); err != nil {
+			log.Printf("rebuilding s3 notifications for %s: %v", bucketName, err)
+			continue
+		}
+	}
+	return nil
+}
 
-		// La región ya fue cacheada en IngestNodes — esto es un lookup,
-		// no una llamada de red.
-		region, err := c.regionForBucket(ctx, bucketName)
-		if err != nil {
-			log.Printf("getting region for %s: %v", bucketName, err)
+// RebuildRelations recrea TODAS las notificaciones salientes del bucket.
+// PutBucketNotificationConfiguration reemplaza la config completa, así que
+// el rebuild puntual es correcto: borrar todas las viejas, crear las nuevas.
+func (c *S3Crawler) RebuildRelations(ctx context.Context, session neo4j.SessionWithContext, bucketName string) error {
+	return c.rebuildNotificationsFromBucket(ctx, session, bucketName)
+}
+
+func (c *S3Crawler) RebuildRelationsWithDriver(ctx context.Context, driver neo4j.DriverWithContext, bucketName string) error {
+	session := driver.NewSession(ctx, neo4j.SessionConfig{AccessMode: neo4j.AccessModeWrite})
+	defer session.Close(ctx)
+	return c.RebuildRelations(ctx, session, bucketName)
+}
+
+func (c *S3Crawler) rebuildNotificationsFromBucket(ctx context.Context, session neo4j.SessionWithContext, bucketName string) error {
+	bucketArn := BuildS3Arn(bucketName)
+
+	region, err := c.regionForBucket(ctx, bucketName)
+	if err != nil {
+		return fmt.Errorf("resolving region: %w", err)
+	}
+
+	regionalClient := c.clientForRegion(region)
+	notifResp, err := regionalClient.GetBucketNotificationConfiguration(ctx,
+		&s3.GetBucketNotificationConfigurationInput{Bucket: &bucketName},
+	)
+	if err != nil {
+		return fmt.Errorf("getting notification config: %w", err)
+	}
+
+	// Borrar todas las relaciones NOTIFIES previas del bucket — independiente
+	// de los targets. Esto es correcto porque PutBucketNotificationConfiguration
+	// reemplaza el set completo.
+	_, err = session.Run(ctx,
+		`MATCH (b:S3Bucket:AWSResource {arn: $arn})-[r:NOTIFIES]->()
+		 DELETE r`,
+		map[string]any{"arn": bucketArn},
+	)
+	if err != nil {
+		return fmt.Errorf("clearing old NOTIFIES: %w", err)
+	}
+
+	// Crear las nuevas (solo Lambda en MVP — Queue/SNS quedan en backlog).
+	for _, lambdaConfig := range notifResp.LambdaFunctionConfigurations {
+		if lambdaConfig.LambdaFunctionArn == nil {
 			continue
 		}
 
-		// Cliente regional para la operación que requiere endpoint específico.
-		regionalClient := c.clientForRegion(region)
-		notifResp, err := regionalClient.GetBucketNotificationConfiguration(ctx,
-			&s3.GetBucketNotificationConfigurationInput{Bucket: b.Name},
+		events := make([]string, 0, len(lambdaConfig.Events))
+		for _, e := range lambdaConfig.Events {
+			events = append(events, string(e))
+		}
+
+		_, err := session.Run(ctx,
+			`MATCH (src:S3Bucket:AWSResource {arn: $sourceArn})
+			 MATCH (fn:Function:AWSResource {arn: $targetArn})
+			 MERGE (src)-[:NOTIFIES {events: $events}]->(fn)`,
+			map[string]any{
+				"sourceArn": bucketArn,
+				"targetArn": *lambdaConfig.LambdaFunctionArn,
+				"events":    events,
+			},
 		)
 		if err != nil {
-			log.Printf("getting notification config for %s (%s): %v", bucketName, region, err)
-			continue
-		}
-
-		for _, lambdaConfig := range notifResp.LambdaFunctionConfigurations {
-			if lambdaConfig.LambdaFunctionArn == nil {
-				continue
-			}
-
-			events := make([]string, 0, len(lambdaConfig.Events))
-			for _, e := range lambdaConfig.Events {
-				events = append(events, string(e))
-			}
-
-			rel := models.NotifiesRelation{
-				SourceArn: bucketArn,
-				TargetArn: *lambdaConfig.LambdaFunctionArn,
-				Events:    events,
-			}
-
-			_, err := session.Run(ctx,
-				`MATCH (src:S3Bucket:AWSResource {arn: $sourceArn})
-				 MATCH (fn:Function:AWSResource {arn: $targetArn})
-				 MERGE (src)-[:NOTIFIES {events: $events}]->(fn)`,
-				map[string]any{
-					"sourceArn": rel.SourceArn,
-					"targetArn": rel.TargetArn,
-					"events":    rel.Events,
-				},
-			)
-			if err != nil {
-				log.Printf("NOTIFIES relation error for %s -> %s: %v",
-					bucketName, *lambdaConfig.LambdaFunctionArn, err)
-			}
+			log.Printf("NOTIFIES relation error %s -> %s: %v",
+				bucketName, *lambdaConfig.LambdaFunctionArn, err)
 		}
 	}
 
+	return nil
+}
+
+// =============================================================================
+// DELETE
+// =============================================================================
+
+func (c *S3Crawler) DeleteByArn(ctx context.Context, driver neo4j.DriverWithContext, arn string) error {
+	session := driver.NewSession(ctx, neo4j.SessionConfig{AccessMode: neo4j.AccessModeWrite})
+	defer session.Close(ctx)
+
+	_, err := session.Run(ctx,
+		`MATCH (b:S3Bucket:AWSResource {arn: $arn})
+		 DETACH DELETE b`,
+		map[string]any{"arn": arn},
+	)
+	if err != nil {
+		return fmt.Errorf("deleting bucket %s: %w", arn, err)
+	}
 	return nil
 }
