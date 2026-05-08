@@ -43,10 +43,13 @@ func (h *SubnetHandler) HandleChange(ctx context.Context, driver neo4j.DriverWit
 }
 
 func (h *SubnetHandler) HandleDelete(ctx context.Context, driver neo4j.DriverWithContext, event *events.EventBridgeMessage) error {
-	arn := event.Detail.PrimaryResourceARN()
-	if arn == "" {
-		return fmt.Errorf("DeleteSubnet event has no resource ARN")
+	subnetId, err := extractSubnetId(event)
+	if err != nil {
+		return fmt.Errorf("extracting subnet id: %w", err)
 	}
+
+	arn := fmt.Sprintf("arn:aws:ec2:%s:%s:subnet/%s",
+		event.Detail.AwsRegion, event.Account, subnetId)
 
 	log.Printf("[%s] removing subnet: %s", event.Detail.EventName, arn)
 

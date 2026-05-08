@@ -39,10 +39,16 @@ func (h *VPCHandler) HandleChange(ctx context.Context, driver neo4j.DriverWithCo
 }
 
 func (h *VPCHandler) HandleDelete(ctx context.Context, driver neo4j.DriverWithContext, event *events.EventBridgeMessage) error {
-	arn := event.Detail.PrimaryResourceARN()
-	if arn == "" {
-		return fmt.Errorf("DeleteVpc event has no resource ARN")
+	vpcId, err := extractVpcId(event)
+	if err != nil {
+		return fmt.Errorf("extracting vpc id: %w", err)
 	}
+
+	// Construimos el ARN nosotros mismos — el Resources[] del payload de
+	// CloudTrail no siempre llega via EventBridge, así que no podemos
+	// confiar en PrimaryResourceARN() para deletes.
+	arn := fmt.Sprintf("arn:aws:ec2:%s:%s:vpc/%s",
+		event.Detail.AwsRegion, event.Account, vpcId)
 
 	log.Printf("[%s] removing vpc: %s", event.Detail.EventName, arn)
 
@@ -53,7 +59,6 @@ func (h *VPCHandler) HandleDelete(ctx context.Context, driver neo4j.DriverWithCo
 }
 
 // extractVpcId saca el VpcId del payload.
-//
 // CreateVpc → responseElements.vpc.vpcId
 // DeleteVpc → requestParameters.vpcId
 func extractVpcId(event *events.EventBridgeMessage) (string, error) {
