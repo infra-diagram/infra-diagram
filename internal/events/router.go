@@ -50,3 +50,9 @@ func (r *Router) Route(ctx context.Context, driver neo4j.DriverWithContext, even
 	log.Printf("handling event: %s [arn=%s]", eventName, event.Detail.PrimaryResourceARN())
 	return handler.Handle(ctx, driver, event)
 }
+
+type HandlerFunc func(ctx context.Context, driver neo4j.DriverWithContext, event *EventBridgeMessage) error
+
+func (f HandlerFunc) Handle(ctx context.Context, driver neo4j.DriverWithContext, event *EventBridgeMessage) error {
+	return f(ctx, driver, event)
+}

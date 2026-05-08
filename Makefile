@@ -1,0 +1,40 @@
+.PHONY: help discover worker build clean test fmt
+
+# Cargar variables del .env si existe
+ifneq (,$(wildcard .env))
+	include .env
+	export
+endif
+
+help: ## Mostrar este mensaje
+	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-15s\033[0m %s\n", $$1, $$2}'
+
+discover: ## Correr el discovery (fase 1+2 una vez)
+	go run ./cmd/discover
+
+worker: ## Correr el worker (loop continuo de eventos)
+	WORKER_QUEUE_URL=$$(cd infra/terraform && terraform output -raw queue_url) \
+	go run ./cmd/worker
+
+build: ## Compilar ambos binarios a ./bin/
+	mkdir -p bin
+	go build -o bin/discover ./cmd/discover
+	go build -o bin/worker ./cmd/worker
+
+test: ## Correr todos los tests
+	go test ./...
+
+fmt: ## Formatear código
+	go fmt ./...
+	go vet ./...
+
+clean: ## Limpiar binarios
+	rm -rf bin/
+
+
+# USAGE:
+# make           muestra ayuda con todos los targets
+# make discover  corre discovery
+# make worker    corre worker (resuelve el queue URL automáticamente)
+# make build     compila ambos a ./bin/
+# make test
