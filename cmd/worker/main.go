@@ -8,6 +8,7 @@ import (
 	"syscall"
 
 	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/lambda"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	neo4jdriver "github.com/neo4j/neo4j-go-driver/v5/neo4j"
 
@@ -57,15 +58,29 @@ func main() {
 	sqsClient := sqs.NewFromConfig(awsCfg)
 	queueCrawler := crawler.NewQueueCrawler(sqsClient)
 
+	lambdaClient := lambda.NewFromConfig(awsCfg)
+	lambdaCrawler := crawler.NewLambdaCrawler(lambdaClient)
+
 	// 5. Handlers concretos
 	sqsHandler := handlers.NewSQSHandler(queueCrawler)
+	lambdaHandler := handlers.NewLambdaHandler(lambdaCrawler)
 
 	// 6. Router con todos los handlers registrados
 	router := events.NewRouter()
+
+	// SQS
 	router.Register("CreateQueue", events.HandlerFunc(sqsHandler.HandleChange))
 	router.Register("SetQueueAttributes", events.HandlerFunc(sqsHandler.HandleChange))
 	router.Register("TagQueue", events.HandlerFunc(sqsHandler.HandleChange))
 	router.Register("DeleteQueue", events.HandlerFunc(sqsHandler.HandleDelete))
+
+	// Lambda
+	// 20150331 y v2 son las versiones de la API de lambda. AWS conserva los nombres antiguos
+	// por compatibilidad.
+	router.Register("CreateFunction20150331", events.HandlerFunc(lambdaHandler.HandleChange))
+	router.Register("UpdateFunctionConfiguration20150331v2", events.HandlerFunc(lambdaHandler.HandleChange))
+	router.Register("UpdateFunctionCode20150331v2", events.HandlerFunc(lambdaHandler.HandleChange))
+	router.Register("DeleteFunction20150331", events.HandlerFunc(lambdaHandler.HandleDelete))
 
 	// 7. Worker y arranque del loop
 	worker := events.NewWorker(sqsClient, queueURL, driver, router)
