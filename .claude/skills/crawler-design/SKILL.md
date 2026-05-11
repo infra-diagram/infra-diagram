@@ -144,4 +144,85 @@ func NewIAMHandler(crawler *crawler.IAMCrawler) *IAMHandler
 Especifica cuántos métodos `Handle*` necesita y qué eventos cubre cada uno. Para servicios con múltiples tipos de recursos, puede haber varios:
 
 \```
-HandleRoleChange (CreateRole,
+HandleRoleChange (CreateRole, UpdateRole, AttachRolePolicy, DetachRolePolicy, ...)
+HandleRoleDelete (DeleteRole)
+HandlePolicyChange (CreatePolicy, CreatePolicyVersion, SetDefaultPolicyVersion)
+HandlePolicyDelete (DeletePolicy)
+\```
+
+**Helper de extracción:**
+
+Para cada tipo de recurso, especifica cómo se extrae el identificador del payload. Reusa el patrón:
+
+\```go
+func extractRoleName(event *events.EventBridgeMessage) (string, error)
+\```
+
+Especifica de qué campo del payload sale (`requestParameters.roleName`, `responseElements.role.arn`, etc.) basado en la sección 5 del research.
+
+**Registros en `cmd/worker/main.go`:**
+
+Lista exactamente las líneas a agregar:
+
+\```go
+// IAM Roles
+router.Register("CreateRole", events.HandlerFunc(iamHandler.HandleRoleChange))
+router.Register("UpdateRole", events.HandlerFunc(iamHandler.HandleRoleChange))
+router.Register("AttachRolePolicy", events.HandlerFunc(iamHandler.HandleRoleChange))
+router.Register("DetachRolePolicy", events.HandlerFunc(iamHandler.HandleRoleChange))
+router.Register("DeleteRole", events.HandlerFunc(iamHandler.HandleRoleDelete))
+// ... etc
+\```
+
+### 6. Decisiones de implementación a confirmar
+
+Lista las decisiones que NO están en el research pero requieren respuesta del usuario antes de implementar. Ejemplos típicos:
+
+- "¿El IAMCrawler maneja Roles y Policies en un solo struct, o son dos crawlers separados?"
+- "¿`AttachedPolicyRelation` es un struct nuevo o reusamos `BelongsToRelation`?"
+- "Para la relación Role→EC2, ¿iteramos las instances del grafo via `MATCH (e:EC2Instance)` o llamamos `DescribeInstances` en el crawler?"
+
+NO inventes la decisión — preséntala con tradeoff y espera input.
+
+### 7. Checklist de archivos a crear/modificar
+
+Lista exhaustiva de los archivos que el siguiente SKILL (implementation) tocará:
+
+- [ ] `internal/models/nodes.go` — agregar structs `IAMRole`, `IAMPolicy`
+- [ ] `internal/models/relations.go` — agregar struct `AttachedPolicyRelation`
+- [ ] `internal/crawler/iam.go` — crear (nuevo)
+- [ ] `internal/crawler/helpers.go` — agregar `rebuildAttachedPolicy`
+- [ ] `internal/events/handlers/iam.go` — crear (nuevo)
+- [ ] `cmd/discover/main.go` — agregar `IAMCrawler` a la lista
+- [ ] `cmd/worker/main.go` — registrar los handlers
+- [ ] `internal/graph/setup.go` — agregar índices: `CREATE INDEX FOR (n:IAMRole) ON (n.arn)` etc.
+
+## Reglas del diseño
+
+1. **Sigue el patrón existente.** Si el proyecto siempre usa `IngestSingleWithDriver` como wrapper, tu diseño debe usarlo. No inventes patrones nuevos sin justificación.
+
+2. **Especificidad sobre teoría.** "El crawler usa cache para evitar dobles llamadas" no sirve. "El crawler tiene `rolesOnce sync.Once` y método `loadRoles(ctx) ([]iamtypes.Role, error)` cacheado" sí sirve.
+
+3. **Cita el research constantemente.** Cada decisión debe poder rastrearse a una sección del research. "Según research §4, esta relación es N-a-N estable, por eso..."
+
+4. **Pregunta antes de asumir** decisiones grandes. Si el servicio tiene 3 tipos de recursos y el research solo decidió 2 explícitamente, pregunta sobre el tercero.
+
+5. **No escribas el código completo.** Esta fase es diseño — solo signatures, structs, y decisiones. El código completo viene en la siguiente fase.
+
+6. **Considera el orden de ingesta.** Si las relaciones del servicio dependen de nodos de otro crawler (ej. Role→EC2 necesita que EC2 exista), nóta esto en la sección de estrategia de relaciones.
+
+## Ejemplo de output
+
+Mira `examples/sqs-design.md` para un ejemplo completo del documento de diseño aplicado a SQS (servicio simple ya implementado).
+
+## Cómo proceder
+
+1. Pregunta al usuario qué servicio quiere diseñar (si no lo dijo).
+2. **Lee el archivo de research** correspondiente (`docs/research/{servicio}-research.md`). Si no existe o le falta sección 9, detente y pídelo.
+3. **Lee los archivos del proyecto** mencionados en "Contexto del proyecto" para entender el patrón actual.
+4. Produce el documento siguiendo la estructura de arriba.
+5. Presenta las decisiones de implementación a confirmar (sección 6) y **espera respuestas del usuario**.
+6. Una vez confirmadas, **actualiza el documento agregando una sección final "8. Decisiones de implementación tomadas"** con las respuestas y un breve razonamiento.
+7. Sugiere guardar el documento en `docs/design/{servicio}-design.md`.
+
+El archivo final debe ser self-contained y suficientemente específico para que el siguiente SKILL (implementation) pueda escribir el código sin necesidad de inventar decisiones.
