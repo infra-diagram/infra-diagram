@@ -79,3 +79,25 @@ func GetNameFromTags(tags []ec2types.Tag) string {
 func BuildS3Arn(bucketName string) string {
 	return "arn:aws:s3:::" + bucketName
 }
+
+// GetIAMResourceNameFromArn extrae el nombre del recurso IAM desde su ARN.
+// Maneja paths con múltiples segmentos (service-linked roles, paths organizacionales):
+//
+//	arn:aws:iam::123:role/my-role                                    → "my-role"
+//	arn:aws:iam::123:role/aws-service-role/elb.amazonaws.com/my-role → "my-role"
+//	arn:aws:iam::123:policy/my-policy                                → "my-policy"
+//	arn:aws:iam::123:instance-profile/my-prof                        → "my-prof"
+//
+// NOTA: no llamar GetRegionFromArn para ARNs IAM — el campo región está vacío.
+func GetIAMResourceNameFromArn(arn string) (string, error) {
+	parts := strings.Split(arn, ":")
+	if len(parts) < 6 {
+		return "", fmt.Errorf("invalid IAM ARN: %s", arn)
+	}
+	// parts[5] = "role/path/to/name" o "instance-profile/name"
+	segments := strings.Split(parts[5], "/")
+	if len(segments) < 2 {
+		return "", fmt.Errorf("invalid IAM resource segment in ARN: %s", arn)
+	}
+	return segments[len(segments)-1], nil
+}

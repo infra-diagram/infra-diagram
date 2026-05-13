@@ -86,7 +86,7 @@ resource "aws_cloudwatch_event_rule" "worker_rule" {
   description = "Captura eventos que crean, modifican o eliminan recursos AWS"
 
   event_pattern = jsonencode({
-    source      = ["aws.ec2", "aws.lambda", "aws.s3", "aws.sqs"]
+    source      = ["aws.ec2", "aws.lambda", "aws.s3", "aws.sqs", "aws.iam"]
     detail-type = ["AWS API Call via CloudTrail"]
     detail = {
       eventName = [
@@ -94,6 +94,8 @@ resource "aws_cloudwatch_event_rule" "worker_rule" {
         "RunInstances", "TerminateInstances",
         "CreateVpc", "DeleteVpc",
         "CreateSubnet", "DeleteSubnet",
+        # EC2 — instance profile (EC2Handler reconstruye INSTANCE_PROFILE_OF)
+        "AssociateIamInstanceProfile", "DisassociateIamInstanceProfile",
 
         # Lambda
         "CreateFunction20150331", "DeleteFunction20150331",
@@ -106,7 +108,19 @@ resource "aws_cloudwatch_event_rule" "worker_rule" {
         "PutBucketNotificationConfiguration",
 
         # SQS
-        "CreateQueue", "DeleteQueue"
+        "CreateQueue", "DeleteQueue",
+
+        # IAM Roles
+        "CreateRole", "UpdateRole",
+        "UpdateAssumeRolePolicy",
+        "AttachRolePolicy", "DetachRolePolicy",
+        "PutRolePolicy",
+        "DeleteRole",
+
+        # IAM Policies
+        "CreatePolicy",
+        "CreatePolicyVersion", "SetDefaultPolicyVersion",
+        "DeletePolicy"
       ]
     }
   })

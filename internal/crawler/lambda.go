@@ -99,31 +99,39 @@ func (c *LambdaCrawler) upsertNodeFromFunction(ctx context.Context, session neo4
 		vpcId = *fn.VpcConfig.VpcId
 	}
 
+	executionRoleArn := ""
+	if fn.Role != nil {
+		executionRoleArn = *fn.Role
+	}
+
 	node := models.Function{
 		AWSResource: models.AWSResource{
 			Arn:       *fn.FunctionArn,
 			AccountId: accountId,
 		},
-		Name:    *fn.FunctionName,
-		Runtime: string(fn.Runtime),
-		Region:  region,
-		VpcId:   vpcId,
+		Name:             *fn.FunctionName,
+		Runtime:          string(fn.Runtime),
+		Region:           region,
+		VpcId:            vpcId,
+		ExecutionRoleArn: executionRoleArn,
 	}
 
 	_, err = session.Run(ctx,
 		`MERGE (f:Function:AWSResource {arn: $arn})
-		 SET f.name      = $name,
-		     f.runtime   = $runtime,
-		     f.region    = $region,
-		     f.accountId = $accountId,
-		     f.vpcId     = $vpcId`,
+		 SET f.name             = $name,
+		     f.runtime          = $runtime,
+		     f.region           = $region,
+		     f.accountId        = $accountId,
+		     f.vpcId            = $vpcId,
+		     f.executionRoleArn = $executionRoleArn`,
 		map[string]any{
-			"arn":       node.Arn,
-			"name":      node.Name,
-			"runtime":   node.Runtime,
-			"region":    node.Region,
-			"accountId": node.AccountId,
-			"vpcId":     node.VpcId,
+			"arn":              node.Arn,
+			"name":             node.Name,
+			"runtime":          node.Runtime,
+			"region":           node.Region,
+			"accountId":        node.AccountId,
+			"vpcId":            node.VpcId,
+			"executionRoleArn": node.ExecutionRoleArn,
 		},
 	)
 	if err != nil {
@@ -171,7 +179,18 @@ func (c *LambdaCrawler) RebuildRelations(ctx context.Context, session neo4j.Sess
 	if err != nil {
 		return err
 	}
-	return c.rebuildVPCRelationsFromFunction(ctx, session, fn)
+	if err := c.rebuildVPCRelationsFromFunction(ctx, session, fn); err != nil {
+		return err
+	}
+	return c.rebuildExecutesFromFunction(ctx, session, fn)
+}
+
+// rebuildExecutesFromFunction recrea la relación EXECUTES desde el IAMRole hacia esta función.
+func (c *LambdaCrawler) rebuildExecutesFromFunction(ctx context.Context, session neo4j.SessionWithContext, fn lambdatypes.FunctionConfiguration) error {
+	if fn.FunctionArn == nil || fn.Role == nil || *fn.Role == "" {
+		return nil
+	}
+	return rebuildExecutes(ctx, session, *fn.Role, []string{*fn.FunctionArn})
 }
 
 func (c *LambdaCrawler) RebuildRelationsWithDriver(ctx context.Context, driver neo4j.DriverWithContext, functionName string) error {

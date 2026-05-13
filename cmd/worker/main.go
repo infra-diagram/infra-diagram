@@ -9,6 +9,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	"github.com/aws/aws-sdk-go-v2/service/iam"
 	"github.com/aws/aws-sdk-go-v2/service/lambda"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	neo4jdriver "github.com/neo4j/neo4j-go-driver/v5/neo4j"
@@ -56,9 +57,11 @@ func main() {
 	log.Println("Connected to Neo4j")
 
 	// Clientes AWS — un EC2 client compartido entre VPC, Subnet, EC2
+	// IAM es global: no necesita región.
 	sqsClient := sqs.NewFromConfig(awsCfg)
 	lambdaClient := lambda.NewFromConfig(awsCfg)
 	ec2Client := ec2.NewFromConfig(awsCfg)
+	iamClient := iam.NewFromConfig(awsCfg)
 
 	// Crawlers
 	queueCrawler := crawler.NewQueueCrawler(sqsClient)
@@ -67,6 +70,7 @@ func main() {
 	vpcCrawler := crawler.NewVPCCrawler(ec2Client, region)
 	subnetCrawler := crawler.NewSubnetCrawler(ec2Client)
 	ec2Crawler := crawler.NewEC2Crawler(ec2Client, region)
+	iamCrawler := crawler.NewIAMCrawler(iamClient)
 
 	// Handlers
 	sqsHandler := handlers.NewSQSHandler(queueCrawler)
@@ -74,7 +78,8 @@ func main() {
 	s3Handler := handlers.NewS3Handler(s3Crawler)
 	vpcHandler := handlers.NewVPCHandler(vpcCrawler)
 	subnetHandler := handlers.NewSubnetHandler(subnetCrawler)
-	ec2Handler := handlers.NewEC2Handler(ec2Crawler)
+	ec2Handler := handlers.NewEC2Handler(ec2Crawler, iamClient)
+	iamHandler := handlers.NewIAMHandler(iamCrawler)
 
 	// Router con todos los registros
 	router := events.NewRouter()
@@ -107,6 +112,23 @@ func main() {
 	// EC2
 	router.Register("RunInstances", events.HandlerFunc(ec2Handler.HandleChange))
 	router.Register("TerminateInstances", events.HandlerFunc(ec2Handler.HandleDelete))
+	router.Register("AssociateIamInstanceProfile", events.HandlerFunc(ec2Handler.HandleChange))
+	router.Register("DisassociateIamInstanceProfile", events.HandlerFunc(ec2Handler.HandleDisassociateInstanceProfile))
+
+	// IAM Roles
+	router.Register("CreateRole", events.HandlerFunc(iamHandler.HandleRoleChange))
+	router.Register("UpdateRole", events.HandlerFunc(iamHandler.HandleRoleChange))
+	router.Register("UpdateAssumeRolePolicy", events.HandlerFunc(iamHandler.HandleRoleChange))
+	router.Register("AttachRolePolicy", events.HandlerFunc(iamHandler.HandleRoleChange))
+	router.Register("DetachRolePolicy", events.HandlerFunc(iamHandler.HandleRoleChange))
+	router.Register("PutRolePolicy", events.HandlerFunc(iamHandler.HandleRoleChange))
+	router.Register("DeleteRole", events.HandlerFunc(iamHandler.HandleRoleDelete))
+
+	// IAM Policies
+	router.Register("CreatePolicy", events.HandlerFunc(iamHandler.HandlePolicyChange))
+	router.Register("CreatePolicyVersion", events.HandlerFunc(iamHandler.HandlePolicyChange))
+	router.Register("SetDefaultPolicyVersion", events.HandlerFunc(iamHandler.HandlePolicyChange))
+	router.Register("DeletePolicy", events.HandlerFunc(iamHandler.HandlePolicyDelete))
 
 	// Worker loop
 	worker := events.NewWorker(sqsClient, queueURL, driver, router)

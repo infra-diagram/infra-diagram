@@ -100,46 +100,67 @@ func (c *EC2Crawler) upsertNodeFromInstance(ctx context.Context, session neo4j.S
 		launchTime = instance.LaunchTime.UTC().Format(time.RFC3339)
 	}
 
+	iamInstanceProfileArn := ""
+	if instance.IamInstanceProfile != nil && instance.IamInstanceProfile.Arn != nil {
+		iamInstanceProfileArn = *instance.IamInstanceProfile.Arn
+	}
+
 	node := models.EC2Instance{
 		AWSResource: models.AWSResource{
 			Arn:       arn,
 			AccountId: accountId,
 		},
-		InstanceId:   *instance.InstanceId,
-		InstanceType: string(instance.InstanceType),
-		State:        state,
-		VpcId:        vpcId,
-		SubnetId:     subnetId,
-		Region:       c.region,
-		LaunchTime:   launchTime,
+		InstanceId:            *instance.InstanceId,
+		InstanceType:          string(instance.InstanceType),
+		State:                 state,
+		VpcId:                 vpcId,
+		SubnetId:              subnetId,
+		Region:                c.region,
+		LaunchTime:            launchTime,
+		IamInstanceProfileArn: iamInstanceProfileArn,
 	}
 
 	_, err := session.Run(ctx,
 		`MERGE (e:EC2Instance:AWSResource {arn: $arn})
-		 SET e.instanceId   = $instanceId,
-		     e.instanceType = $instanceType,
-		     e.state        = $state,
-		     e.vpcId        = $vpcId,
-		     e.subnetId     = $subnetId,
-		     e.region       = $region,
-		     e.accountId    = $accountId,
-		     e.launchTime   = $launchTime`,
+		 SET e.instanceId            = $instanceId,
+		     e.instanceType          = $instanceType,
+		     e.state                 = $state,
+		     e.vpcId                 = $vpcId,
+		     e.subnetId              = $subnetId,
+		     e.region                = $region,
+		     e.accountId             = $accountId,
+		     e.launchTime            = $launchTime,
+		     e.iamInstanceProfileArn = $iamInstanceProfileArn`,
 		map[string]any{
-			"arn":          node.Arn,
-			"instanceId":   node.InstanceId,
-			"instanceType": node.InstanceType,
-			"state":        node.State,
-			"vpcId":        node.VpcId,
-			"subnetId":     node.SubnetId,
-			"region":       node.Region,
-			"accountId":    node.AccountId,
-			"launchTime":   node.LaunchTime,
+			"arn":                   node.Arn,
+			"instanceId":            node.InstanceId,
+			"instanceType":          node.InstanceType,
+			"state":                 node.State,
+			"vpcId":                 node.VpcId,
+			"subnetId":              node.SubnetId,
+			"region":                node.Region,
+			"accountId":             node.AccountId,
+			"launchTime":            node.LaunchTime,
+			"iamInstanceProfileArn": node.IamInstanceProfileArn,
 		},
 	)
 	if err != nil {
 		return fmt.Errorf("merging instance %s: %w", node.InstanceId, err)
 	}
 	return nil
+}
+
+// FetchInstanceProfileArn retorna el ARN del instance profile asociado a la instancia.
+// Retorna ("", nil) si la instancia no tiene instance profile.
+func (c *EC2Crawler) FetchInstanceProfileArn(ctx context.Context, instanceId string) (string, error) {
+	instance, _, err := c.fetchInstance(ctx, instanceId)
+	if err != nil {
+		return "", err
+	}
+	if instance.IamInstanceProfile == nil || instance.IamInstanceProfile.Arn == nil {
+		return "", nil
+	}
+	return *instance.IamInstanceProfile.Arn, nil
 }
 
 // fetchInstance hace re-fetch puntual y retorna también el accountId del

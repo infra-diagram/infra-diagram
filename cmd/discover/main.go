@@ -7,6 +7,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	"github.com/aws/aws-sdk-go-v2/service/iam"
 	"github.com/aws/aws-sdk-go-v2/service/lambda"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	neo4jdriver "github.com/neo4j/neo4j-go-driver/v5/neo4j"
@@ -59,7 +60,8 @@ func main() {
 	ec2Client := ec2.NewFromConfig(awsCfg)
 
 	// 4. Construir los crawlers concretos. Esta es la única lista que cambia
-	//    cuando agregas un nuevo servicio AWS al MVP — todo lo demás es genérico.\
+	//    cuando agregas un nuevo servicio AWS al MVP — todo lo demás es genérico.
+	// IAM es global: iam.NewFromConfig no necesita región.
 	crawlers := []crawler.Crawler{
 		crawler.NewVPCCrawler(ec2Client, region),
 		crawler.NewSubnetCrawler(ec2Client),
@@ -67,6 +69,7 @@ func main() {
 		crawler.NewLambdaCrawler(lambda.NewFromConfig(awsCfg)),
 		crawler.NewQueueCrawler(sqs.NewFromConfig(awsCfg)),
 		crawler.NewS3Crawler(awsCfg),
+		crawler.NewIAMCrawler(iam.NewFromConfig(awsCfg)),
 	}
 	log.Printf("Initialized %d crawlers", len(crawlers))
 

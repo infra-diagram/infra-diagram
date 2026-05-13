@@ -26,3 +26,24 @@ type NotifiesRelation struct {
 	TargetArn string   `neo4j:"targetArn"` // ARN de la Function
 	Events    []string `neo4j:"events"`    // ["s3:ObjectCreated:*", ...]
 }
+
+// (:IAMRole)-[:ATTACHED_POLICY]->(:IAMPolicy)
+// Fuente: iam.ListAttachedRolePolicies
+type AttachedPolicyRelation struct {
+	RoleArn   string `neo4j:"roleArn"`
+	PolicyArn string `neo4j:"policyArn"`
+}
+
+// (:IAMRole)-[:INSTANCE_PROFILE_OF]->(:EC2Instance)
+// Fuente: ec2.DescribeInstances → IamInstanceProfile + iam.GetInstanceProfile
+type InstanceProfileOfRelation struct {
+	RoleArn     string `neo4j:"roleArn"`
+	InstanceArn string `neo4j:"instanceArn"`
+}
+
+// (:IAMRole)-[:EXECUTES]->(:Function)
+// Fuente: lambda.ListFunctions → Role field
+type ExecutesRelation struct {
+	RoleArn     string `neo4j:"roleArn"`
+	FunctionArn string `neo4j:"functionArn"`
+}
