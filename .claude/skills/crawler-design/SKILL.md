@@ -26,6 +26,7 @@ Antes de escribir el diseño, **lee estos archivos del repo** para entender el p
 - `internal/crawler/helpers.go` — helpers existentes (BuildArn, GetRegionFromArn, rebuildBelongsTo, etc.)
 - `internal/events/handlers/sqs.go` — handler simple
 - `internal/events/handlers/lambda.go` — handler con relaciones
+- `infra/terraform/main.tf` — para ver el event_pattern actual de EventBridge (qué services y eventNames están registrados)
 
 Esto te da el "estilo casero" del proyecto, que es más importante que cualquier convención teórica.
 
@@ -174,7 +175,49 @@ router.Register("DeleteRole", events.HandlerFunc(iamHandler.HandleRoleDelete))
 // ... etc
 \```
 
-### 6. Decisiones de implementación a confirmar
+### 6. Actualización de infraestructura Terraform
+
+El worker solo recibe eventos que matcheen el `event_pattern` de la EventBridge rule en `infra/terraform/main.tf`. Agregar handlers en Go no es suficiente — la rule también debe contemplar el nuevo servicio.
+
+Especifica exactamente qué hay que agregar al recurso `aws_cloudwatch_event_rule.worker_rule`:
+
+**Source nuevos a agregar:**
+
+```hcl
+source = ["aws.ec2", "aws.lambda", "aws.s3", "aws.sqs", "aws.{servicio}"]
+```
+
+**EventNames nuevos a agregar:**
+
+Lista exactamente los eventNames que el handler nuevo registra, con un comentario de bloque que separe del resto:
+
+```hcl
+# {Servicio} - sub-recurso 1
+"CreateX", "UpdateX", "DeleteX",
+# {Servicio} - sub-recurso 2
+"CreateY", "DeleteY",
+```
+
+**Cambios al `MessageRetentionPeriod` o `VisibilityTimeout`:** Solo si el nuevo servicio tiene eventos que requieren procesamiento más lento (ej. handlers que hacen N+1 calls). Por defecto, no se cambian.
+
+**Permisos IAM nuevos para el worker:** Lista los permisos `iam:Get*`, `iam:List*` que el worker necesita ejecutar (basado en research §7).
+
+Después de aplicar los cambios:
+
+```bash
+cd infra/terraform
+terraform plan
+terraform apply
+```
+
+Y verifica con:
+
+```bash
+aws events describe-rule --name infra-diagram-resource-changes \
+  --query 'EventPattern' --output text | jq .
+```
+
+### 7. Decisiones de implementación a confirmar
 
 Lista las decisiones que NO están en el research pero requieren respuesta del usuario antes de implementar. Ejemplos típicos:
 
@@ -184,7 +227,7 @@ Lista las decisiones que NO están en el research pero requieren respuesta del u
 
 NO inventes la decisión — preséntala con tradeoff y espera input.
 
-### 7. Checklist de archivos a crear/modificar
+### 8. Checklist de archivos a crear/modificar
 
 Lista exhaustiva de los archivos que el siguiente SKILL (implementation) tocará:
 
@@ -196,6 +239,7 @@ Lista exhaustiva de los archivos que el siguiente SKILL (implementation) tocará
 - [ ] `cmd/discover/main.go` — agregar `IAMCrawler` a la lista
 - [ ] `cmd/worker/main.go` — registrar los handlers
 - [ ] `internal/graph/setup.go` — agregar índices: `CREATE INDEX FOR (n:IAMRole) ON (n.arn)` etc.
+- [ ] `infra/terraform/main.tf` — agregar `aws.{servicio}` al `source` y los eventNames nuevos al filtro
 
 ## Reglas del diseño
 
@@ -226,3 +270,8 @@ Mira `examples/sqs-design.md` para un ejemplo completo del documento de diseño 
 7. Sugiere guardar el documento en `docs/design/{servicio}-design.md`.
 
 El archivo final debe ser self-contained y suficientemente específico para que el siguiente SKILL (implementation) pueda escribir el código sin necesidad de inventar decisiones.
+
+## Cambios iterativos
+
+- 2026-05: Agregado paso 6 (Terraform updates). Descubierto durante el diseño de IAM
+  — sin esto el worker nunca recibe eventos del nuevo servicio.
