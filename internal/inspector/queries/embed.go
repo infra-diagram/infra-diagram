@@ -13,3 +13,6 @@ var OrphansRole string
 
 //go:embed orphans_subnet.cypher
 var OrphansSubnet string
+
+//go:embed overpermissive.cypher
+var OverPermissive string

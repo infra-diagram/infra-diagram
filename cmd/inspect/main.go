@@ -35,6 +35,7 @@ func main() {
 	// Setup registry
 	registry := inspector.NewRegistry()
 	registry.Register(insights.NewOrphansInsight())
+	registry.Register(insights.NewOverpermissiveInsight()) // ← nuevo
 	// Aquí se registran los demás insights conforme se implementan
 
 	runner := inspector.NewRunner(driver)
