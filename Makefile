@@ -16,10 +16,14 @@ worker: ## Correr el worker (loop continuo de eventos)
 	WORKER_QUEUE_URL=$$(cd infra/terraform && terraform output -raw queue_url) \
 	go run ./cmd/worker
 
+inspect: ## Correr el inspector
+	go run ./cmd/inspect | jq '.[] | {insight: .insight_id, findings_count: (.findings | length)}'
+
 build: ## Compilar ambos binarios a ./bin/
 	mkdir -p bin
 	go build -o bin/discover ./cmd/discover
 	go build -o bin/worker ./cmd/worker
+	go build -o bin/inspect ./cmd/inspect
 
 test: ## Correr todos los tests
 	go test ./...
@@ -36,5 +40,5 @@ clean: ## Limpiar binarios
 # make           muestra ayuda con todos los targets
 # make discover  corre discovery
 # make worker    corre worker (resuelve el queue URL automáticamente)
-# make build     compila ambos a ./bin/
+# make build     compila todos los binarios a ./bin/
 # make test
