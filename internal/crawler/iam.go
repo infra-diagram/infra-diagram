@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/iam"
 	iamtypes "github.com/aws/aws-sdk-go-v2/service/iam/types"
 	"github.com/neo4j/neo4j-go-driver/v5/neo4j"
@@ -77,7 +79,15 @@ func (c *IAMCrawler) IngestSinglePolicy(ctx context.Context, session neo4j.Sessi
 	if err != nil {
 		return err
 	}
-	return c.upsertNodeFromPolicy(ctx, session, policy)
+
+	document, err := c.fetchPolicyDocument(ctx, policy)
+	if err != nil {
+		log.Printf("fetching policy document for %s: %v — continuing with empty doc",
+			policyArn, err)
+		document = ""
+	}
+
+	return c.upsertNodeFromPolicy(ctx, session, policy, document)
 }
 
 func (c *IAMCrawler) IngestSinglePolicyWithDriver(ctx context.Context, driver neo4j.DriverWithContext, policyArn string) error {
@@ -104,14 +114,23 @@ func (c *IAMCrawler) ingestPolicyNodes(ctx context.Context, session neo4j.Sessio
 	paginator := iam.NewListPoliciesPaginator(c.iamClient, &iam.ListPoliciesInput{
 		Scope: iamtypes.PolicyScopeTypeLocal,
 	})
+
 	for paginator.HasMorePages() {
 		page, err := paginator.NextPage(ctx)
 		if err != nil {
-			return fmt.Errorf("listing iam policies: %w", err)
+			return fmt.Errorf("listing policies: %w", err)
 		}
+
 		for _, policy := range page.Policies {
-			if err := c.upsertNodeFromPolicy(ctx, session, policy); err != nil {
-				log.Printf("ingesting iam policy: %v", err)
+			document, err := c.fetchPolicyDocument(ctx, policy)
+			if err != nil {
+				log.Printf("fetching policy document for %s: %v — continuing with empty doc",
+					aws.ToString(policy.Arn), err)
+				document = ""
+			}
+
+			if err := c.upsertNodeFromPolicy(ctx, session, policy, document); err != nil {
+				log.Printf("upserting policy: %v", err)
 				continue
 			}
 		}
@@ -189,7 +208,12 @@ func (c *IAMCrawler) upsertNodeFromRole(ctx context.Context, session neo4j.Sessi
 	return nil
 }
 
-func (c *IAMCrawler) upsertNodeFromPolicy(ctx context.Context, session neo4j.SessionWithContext, policy iamtypes.Policy) error {
+func (c *IAMCrawler) upsertNodeFromPolicy(
+	ctx context.Context,
+	session neo4j.SessionWithContext,
+	policy iamtypes.Policy,
+	document string,
+) error {
 	if policy.Arn == nil || policy.PolicyName == nil {
 		return fmt.Errorf("policy missing required fields")
 	}
@@ -224,40 +248,51 @@ func (c *IAMCrawler) upsertNodeFromPolicy(ctx context.Context, session neo4j.Ses
 		attachmentCount = *policy.AttachmentCount
 	}
 
+	defaultVersionId := ""
+	if policy.DefaultVersionId != nil {
+		defaultVersionId = *policy.DefaultVersionId
+	}
+
 	node := models.IAMPolicy{
 		AWSResource: models.AWSResource{
 			Arn:       *policy.Arn,
 			AccountId: accountId,
 		},
-		PolicyName:      *policy.PolicyName,
-		PolicyId:        policyId,
-		Path:            path,
-		Description:     description,
-		CreateDate:      createDate,
-		UpdateDate:      updateDate,
-		AttachmentCount: attachmentCount,
+		PolicyName:       *policy.PolicyName,
+		PolicyId:         policyId,
+		Path:             path,
+		Description:      description,
+		CreateDate:       createDate,
+		UpdateDate:       updateDate,
+		AttachmentCount:  attachmentCount,
+		PolicyDocument:   document,
+		DefaultVersionId: defaultVersionId,
 	}
 
 	_, err = session.Run(ctx,
 		`MERGE (p:IAMPolicy:AWSResource {arn: $arn})
-		 SET p.policyName      = $policyName,
-		     p.policyId        = $policyId,
-		     p.path            = $path,
-		     p.description     = $description,
-		     p.createDate      = $createDate,
-		     p.updateDate      = $updateDate,
-		     p.attachmentCount = $attachmentCount,
-		     p.accountId       = $accountId`,
+		 SET p.policyName      	= $policyName,
+		     p.policyId        	= $policyId,
+		     p.path            	= $path,
+		     p.description     	= $description,
+		     p.createDate      	= $createDate,
+		     p.updateDate      	= $updateDate,
+		     p.attachmentCount 	= $attachmentCount,
+				 p.policyDocument  	= $policyDocument,
+				 p.defaultVersionId = $defaultVersionId,
+		     p.accountId       	= $accountId`,
 		map[string]any{
-			"arn":             node.Arn,
-			"policyName":      node.PolicyName,
-			"policyId":        node.PolicyId,
-			"path":            node.Path,
-			"description":     node.Description,
-			"createDate":      node.CreateDate,
-			"updateDate":      node.UpdateDate,
-			"attachmentCount": node.AttachmentCount,
-			"accountId":       node.AccountId,
+			"arn":              node.Arn,
+			"policyName":       node.PolicyName,
+			"policyId":         node.PolicyId,
+			"path":             node.Path,
+			"description":      node.Description,
+			"createDate":       node.CreateDate,
+			"updateDate":       node.UpdateDate,
+			"attachmentCount":  node.AttachmentCount,
+			"policyDocument":   node.PolicyDocument,
+			"defaultVersionId": node.DefaultVersionId,
+			"accountId":        node.AccountId,
 		},
 	)
 	if err != nil {
@@ -286,6 +321,37 @@ func (c *IAMCrawler) fetchPolicy(ctx context.Context, policyArn string) (iamtype
 		return iamtypes.Policy{}, fmt.Errorf("iam policy %s has no data", policyArn)
 	}
 	return *resp.Policy, nil
+}
+
+// fetchPolicyDocument obtiene el JSON del documento de la versión default de
+// una policy. Maneja el URL-encoding que AWS aplica al campo.
+//
+// Retorna documento + DefaultVersionId. Si la policy no tiene versiones
+// (no debería pasar pero es defensivo), retorna strings vacíos sin error.
+func (c *IAMCrawler) fetchPolicyDocument(ctx context.Context, policy iamtypes.Policy) (string, error) {
+	if policy.Arn == nil || policy.DefaultVersionId == nil {
+		return "", nil
+	}
+
+	resp, err := c.iamClient.GetPolicyVersion(ctx, &iam.GetPolicyVersionInput{
+		PolicyArn: policy.Arn,
+		VersionId: policy.DefaultVersionId,
+	})
+	if err != nil {
+		return "", fmt.Errorf("getting policy version: %w", err)
+	}
+
+	if resp.PolicyVersion == nil || resp.PolicyVersion.Document == nil {
+		return "", nil
+	}
+
+	// AWS retorna el documento URL-encoded. Decodificamos antes de persistir.
+	decoded, err := url.QueryUnescape(*resp.PolicyVersion.Document)
+	if err != nil {
+		return "", fmt.Errorf("decoding policy document: %w", err)
+	}
+
+	return decoded, nil
 }
 
 // =============================================================================

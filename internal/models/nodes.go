@@ -33,10 +33,10 @@ type Queue struct {
 
 type Function struct {
 	AWSResource
-	Name            string `neo4j:"name"`
-	Runtime         string `neo4j:"runtime"`
-	Region          string `neo4j:"region"`
-	VpcId           string `neo4j:"vpcId"`
+	Name             string `neo4j:"name"`
+	Runtime          string `neo4j:"runtime"`
+	Region           string `neo4j:"region"`
+	VpcId            string `neo4j:"vpcId"`
 	ExecutionRoleArn string `neo4j:"executionRoleArn"` // ARN del IAM role de ejecución
 }
 
@@ -54,7 +54,7 @@ type EC2Instance struct {
 	VpcId                 string `neo4j:"vpcId"`    // vacío si no está en VPC
 	SubnetId              string `neo4j:"subnetId"` // vacío si no está en VPC
 	Region                string `neo4j:"region"`
-	LaunchTime            string `neo4j:"launchTime"` // como ISO 8601 string para Neo4j
+	LaunchTime            string `neo4j:"launchTime"`            // como ISO 8601 string para Neo4j
 	IamInstanceProfileArn string `neo4j:"iamInstanceProfileArn"` // vacío si no tiene instance profile
 }
 
@@ -73,8 +73,16 @@ type IAMPolicy struct {
 	PolicyName      string `neo4j:"policyName"`
 	PolicyId        string `neo4j:"policyId"`
 	Path            string `neo4j:"path"`
-	Description     string `neo4j:"description"`    // vacío en bulk; poblado en IngestSinglePolicy
-	CreateDate      string `neo4j:"createDate"`     // ISO 8601
-	UpdateDate      string `neo4j:"updateDate"`     // ISO 8601
+	Description     string `neo4j:"description"`     // vacío en bulk; poblado en IngestSinglePolicy
+	CreateDate      string `neo4j:"createDate"`      // ISO 8601
+	UpdateDate      string `neo4j:"updateDate"`      // ISO 8601
 	AttachmentCount int32  `neo4j:"attachmentCount"` // 0 si sin attachments
+
+	//PolicyDocument es el JSON del documento de la policy version default.
+	// Viene URL-encoded. lo decodificamos antes de persistir
+	PolicyDocument string `neo4j:"policyDocument"`
+
+	// DefaultVersionId identifica qué versión del documento tenemos persistido.
+	// Util para invalidación: si AWS bumpea a v3 y tenemos v2 sabemos que hay que refetchear
+	DefaultVersionId string `neo4j:"defaultVersionId"`
 }

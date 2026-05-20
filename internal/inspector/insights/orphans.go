@@ -67,7 +67,7 @@ func (o *OrphansInsight) Execute(
 		{
 			query:        queries.OrphansLambda,
 			resourceType: "Function",
-			title:        "Lambda with no invokers",
+			title:        "Lambda with unknown invokers",
 			description:  "This Lambda is not invoked by any known resource in the graph (event source mapping, S3 notification, etc.).",
 			remediation:  "Check whether the Lambda is invoked via API Gateway, EventBridge schedule, or another unmodeled mechanism. If unused, consider deleting it to reduce cost and attack surface.",
 			severity:     inspector.SeverityMedium,
@@ -75,10 +75,10 @@ func (o *OrphansInsight) Execute(
 		{
 			query:        queries.OrphansRole,
 			resourceType: "IAMRole",
-			title:        "Unused IAM role",
+			title:        "IAM role with unknown usage",
 			description:  "This role is not assigned to any EC2 instance or Lambda function in the graph.",
 			remediation:  "If the role was created for a deleted resource, it should be removed. Unused roles are a latent security risk.",
-			severity:     inspector.SeverityMedium,
+			severity:     inspector.SeverityInfo,
 		},
 		{
 			query:        queries.OrphansSubnet,
