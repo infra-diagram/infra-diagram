@@ -16,3 +16,6 @@ var OrphansSubnet string
 
 //go:embed overpermissive.cypher
 var OverPermissive string
+
+//go:embed crossboundary.cypher
+var CrossBoundary string
