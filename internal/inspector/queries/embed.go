@@ -19,3 +19,9 @@ var OverPermissive string
 
 //go:embed crossboundary.cypher
 var CrossBoundary string
+
+//go:embed blast_radius_direct.cypher
+var BlastRadiusDirectQuery string
+
+//go:embed blast_radius_resource_lookup.cypher
+var BlastRadiusResourceLookupQuery string

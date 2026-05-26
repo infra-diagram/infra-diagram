@@ -7,6 +7,7 @@ import (
 	"github.com/neo4j/neo4j-go-driver/v5/neo4j"
 
 	"infra-diagram/internal/inspector"
+	"infra-diagram/internal/inspector/cypherutil"
 	"infra-diagram/internal/inspector/queries"
 )
 
@@ -46,9 +47,9 @@ func (c *CrossBoundaryInsight) Metadata() inspector.Metadata {
 type crossingType string
 
 const (
-	crossingVPCToVPC      crossingType = "vpc_to_vpc"
-	crossingVPCToPublic   crossingType = "vpc_to_public"
-	crossingPublicToVPC   crossingType = "public_to_vpc"
+	crossingVPCToVPC    crossingType = "vpc_to_vpc"
+	crossingVPCToPublic crossingType = "vpc_to_public"
+	crossingPublicToVPC crossingType = "public_to_vpc"
 )
 
 // classifyCrossing determina el tipo de crossing basado en las VPCs de
@@ -110,24 +111,24 @@ func (c *CrossBoundaryInsight) Execute(
 	for cypherResult.Next(ctx) {
 		record := cypherResult.Record()
 
-		sourceArn := getString(record, "sourceArn")
-		targetArn := getString(record, "targetArn")
+		sourceArn := cypherutil.GetString(record, "sourceArn")
+		targetArn := cypherutil.GetString(record, "targetArn")
 		if sourceArn == "" || targetArn == "" {
 			continue
 		}
 
-		sourceVpc := getString(record, "sourceVpc")
-		targetVpc := getString(record, "targetVpc")
-		sourceName := getString(record, "sourceName")
-		targetName := getString(record, "targetName")
-		sourceRegion := getString(record, "sourceRegion")
-		targetRegion := getString(record, "targetRegion")
-		sourceLabels := getStringSlice(record, "sourceLabels")
-		targetLabels := getStringSlice(record, "targetLabels")
-		edgeType := getString(record, "edgeType")
+		sourceVpc := cypherutil.GetString(record, "sourceVpc")
+		targetVpc := cypherutil.GetString(record, "targetVpc")
+		sourceName := cypherutil.GetString(record, "sourceName")
+		targetName := cypherutil.GetString(record, "targetName")
+		sourceRegion := cypherutil.GetString(record, "sourceRegion")
+		targetRegion := cypherutil.GetString(record, "targetRegion")
+		sourceLabels := cypherutil.GetStringSlice(record, "sourceLabels")
+		targetLabels := cypherutil.GetStringSlice(record, "targetLabels")
+		edgeType := cypherutil.GetString(record, "edgeType")
 
-		sourceType := primaryLabel(sourceLabels)
-		targetType := primaryLabel(targetLabels)
+		sourceType := cypherutil.PrimaryLabel(sourceLabels)
+		targetType := cypherutil.PrimaryLabel(targetLabels)
 
 		ct := classifyCrossing(sourceVpc, targetVpc)
 		severity := severityForCrossing(ct)
@@ -272,45 +273,3 @@ func remediationForCrossing(ct crossingType) string {
 }
 
 // === Helpers para extraer valores del Record ===
-
-func getString(record *neo4j.Record, key string) string {
-	val, ok := record.Get(key)
-	if !ok {
-		return ""
-	}
-	s, _ := val.(string)
-	return s
-}
-
-func getStringSlice(record *neo4j.Record, key string) []string {
-	val, ok := record.Get(key)
-	if !ok {
-		return nil
-	}
-	items, ok := val.([]any)
-	if !ok {
-		return nil
-	}
-	out := make([]string, 0, len(items))
-	for _, item := range items {
-		if s, ok := item.(string); ok {
-			out = append(out, s)
-		}
-	}
-	return out
-}
-
-// primaryLabel retorna el primer label que no sea "AWSResource".
-// Todos nuestros nodos llevan doble label (ej. "Queue", "AWSResource") y
-// el primero es el tipo concreto.
-func primaryLabel(labels []string) string {
-	for _, l := range labels {
-		if l != "AWSResource" {
-			return l
-		}
-	}
-	if len(labels) > 0 {
-		return labels[0]
-	}
-	return "Unknown"
-}

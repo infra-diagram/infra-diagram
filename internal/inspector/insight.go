@@ -61,3 +61,15 @@ func (f StandardFilters) IsEmpty() bool {
 		f.ResourceType == "" &&
 		len(f.ExcludeTags) == 0
 }
+
+// HasRequiredParameters retorna true si el insight requiere al menos un
+// parámetro obligatorio. Usado por callers que ejecutan insights en batch
+// (como cmd/inspect default mode) para decidir si saltarlos.
+func (m Metadata) HasRequiredParameters() bool {
+	for _, p := range m.Parameters {
+		if p.Required {
+			return true
+		}
+	}
+	return false
+}
