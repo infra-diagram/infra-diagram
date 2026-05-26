@@ -50,6 +50,7 @@ func main() {
 	registry.Register(insights.NewOverpermissiveInsight())
 	registry.Register(insights.NewCrossBoundaryInsight())
 	registry.Register(insights.NewBlastRadiusInsight())
+	registry.Register(insights.NewAccessPatternsInsight())
 
 	runner := inspector.NewRunner(driver)
 	filters := inspector.StandardFilters{

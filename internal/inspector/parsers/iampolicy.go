@@ -8,6 +8,7 @@ package parsers
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 // PolicyDocument representa un documento de política IAM parseado.
@@ -136,4 +137,102 @@ func normalizeStringOrArray(raw json.RawMessage) []string {
 	}
 
 	return nil
+}
+
+// AccessGrant representa un permiso individual: una action específica
+// sobre un resource específico. Una statement de policy puede generar
+// múltiples AccessGrants (producto cartesiano de Actions × Resources).
+type AccessGrant struct {
+	Action   string // ej. "s3:GetObject"
+	Resource string // ej. "arn:aws:s3:::my-bucket/*"
+}
+
+// ExtractAccessGrants walks the policy and returns all (action, resource)
+// combinations from Allow statements.
+//
+// MVP limitations:
+//   - Ignores Conditions (e.g., MFA required, source VPC)
+//   - Does not apply Deny overrides
+//   - Skips NotAction / NotResource statements
+//   - Returns "*" actions and resources as-is (caller decides how to handle)
+func ExtractAccessGrants(doc *PolicyDocument) []AccessGrant {
+	var grants []AccessGrant
+	for _, stmt := range doc.Statements {
+		if stmt.Effect != "Allow" {
+			continue
+		}
+		if len(stmt.NotActions) > 0 || len(stmt.NotResources) > 0 {
+			// Negation patterns require complex evaluation, skip for MVP
+			continue
+		}
+		for _, action := range stmt.Actions {
+			for _, resource := range stmt.Resources {
+				if action == "" || resource == "" {
+					continue
+				}
+				grants = append(grants, AccessGrant{
+					Action:   action,
+					Resource: resource,
+				})
+			}
+		}
+	}
+	return grants
+}
+
+// IsDataPlaneAction returns true if the action operates on data within a
+// resource (read/write operations) rather than control plane (CRUD on the
+// resource itself).
+//
+// This is the heuristic used by the access_patterns insight to filter
+// noise: a role with `iam:ListRoles` is not "accessing data", but a role
+// with `s3:GetObject` is.
+//
+// Conservative list — extend as needed.
+func IsDataPlaneAction(action string) bool {
+	// Wildcards always pass — let downstream decide
+	if action == "*" {
+		return true
+	}
+
+	parts := strings.SplitN(action, ":", 2)
+	if len(parts) != 2 {
+		return false
+	}
+	service, op := parts[0], parts[1]
+
+	// Service-wide wildcard (e.g. "s3:*") includes data plane
+	if op == "*" {
+		return true
+	}
+
+	switch service {
+	case "s3":
+		return strings.HasPrefix(op, "Get") ||
+			strings.HasPrefix(op, "Put") ||
+			strings.HasPrefix(op, "Delete") ||
+			strings.HasPrefix(op, "List") ||
+			strings.HasPrefix(op, "Copy") ||
+			strings.HasPrefix(op, "Restore")
+	case "sqs":
+		return op == "SendMessage" ||
+			op == "ReceiveMessage" ||
+			op == "DeleteMessage" ||
+			op == "SendMessageBatch" ||
+			op == "DeleteMessageBatch" ||
+			op == "PurgeQueue"
+	case "lambda":
+		return op == "InvokeFunction" ||
+			op == "InvokeAsync"
+	case "dynamodb":
+		return strings.HasPrefix(op, "Get") ||
+			strings.HasPrefix(op, "Put") ||
+			strings.HasPrefix(op, "Update") ||
+			strings.HasPrefix(op, "Delete") ||
+			strings.HasPrefix(op, "Query") ||
+			strings.HasPrefix(op, "Scan") ||
+			strings.HasPrefix(op, "BatchGet") ||
+			strings.HasPrefix(op, "BatchWrite")
+	}
+	return false
 }

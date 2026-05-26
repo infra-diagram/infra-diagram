@@ -28,17 +28,25 @@ func (h *IAMHandler) HandleRoleChange(ctx context.Context, driver neo4j.DriverWi
 		return fmt.Errorf("extracting role name: %w", err)
 	}
 
-	log.Printf("[%s] re-fetching iam role: %s", event.Detail.EventName, roleName)
+	log.Printf("[%s] re-fetching role: %s", event.Detail.EventName, roleName)
 
 	session := driver.NewSession(ctx, neo4j.SessionConfig{AccessMode: neo4j.AccessModeWrite})
 	defer session.Close(ctx)
 
+	// 1. Upsert the node
 	if err := h.crawler.IngestSingleRole(ctx, session, roleName); err != nil {
-		return fmt.Errorf("ingesting iam role %s: %w", roleName, err)
+		return fmt.Errorf("ingesting role %s: %w", roleName, err)
 	}
 
+	// 2. Rebuild ATTACHED_POLICY (best effort — existing logic)
 	if err := h.crawler.RebuildRelations(ctx, session, roleName); err != nil {
-		log.Printf("rebuilding relations for role %s (non-fatal): %v", roleName, err)
+		log.Printf("rebuilding relations for %s (non-fatal): %v", roleName, err)
+	}
+
+	// 3. Rebuild CAN_ACCESS (depends on ATTACHED_POLICY being current)
+	roleArn := fmt.Sprintf("arn:aws:iam::%s:role/%s", event.Account, roleName)
+	if err := h.crawler.RebuildCanAccessForRole(ctx, session, roleArn); err != nil {
+		log.Printf("rebuilding CAN_ACCESS for %s (non-fatal): %v", roleArn, err)
 	}
 
 	return nil
@@ -78,35 +86,99 @@ func (h *IAMHandler) HandlePolicyChange(ctx context.Context, driver neo4j.Driver
 		return fmt.Errorf("extracting policy arn: %w", err)
 	}
 
-	log.Printf("[%s] re-fetching iam policy: %s", event.Detail.EventName, policyArn)
+	log.Printf("[%s] re-fetching policy: %s", event.Detail.EventName, policyArn)
 
-	if err := h.crawler.IngestSinglePolicyWithDriver(ctx, driver, policyArn); err != nil {
-		return fmt.Errorf("ingesting iam policy %s: %w", policyArn, err)
+	session := driver.NewSession(ctx, neo4j.SessionConfig{AccessMode: neo4j.AccessModeWrite})
+	defer session.Close(ctx)
+
+	// 1. Upsert the policy (includes refetching policyDocument)
+	if err := h.crawler.IngestSinglePolicy(ctx, session, policyArn); err != nil {
+		return fmt.Errorf("ingesting policy %s: %w", policyArn, err)
 	}
+
+	// 2. Fan-out: rebuild CAN_ACCESS for every role attached to this policy.
+	// Policy changes affect all roles that use it.
+	if err := h.rebuildCanAccessForAttachedRoles(ctx, session, policyArn); err != nil {
+		log.Printf("rebuilding CAN_ACCESS fan-out for %s (non-fatal): %v", policyArn, err)
+	}
+
 	return nil
+}
+
+// rebuildCanAccessForAttachedRoles finds all roles that have this policy
+// attached and rebuilds their CAN_ACCESS relations.
+func (h *IAMHandler) rebuildCanAccessForAttachedRoles(
+	ctx context.Context,
+	session neo4j.SessionWithContext,
+	policyArn string,
+) error {
+	res, err := session.Run(ctx, `
+		MATCH (r:IAMRole:AWSResource)-[:ATTACHED_POLICY]->(p:IAMPolicy:AWSResource {arn: $policyArn})
+		RETURN r.arn AS roleArn
+	`, map[string]any{"policyArn": policyArn})
+	if err != nil {
+		return fmt.Errorf("finding attached roles: %w", err)
+	}
+
+	for res.Next(ctx) {
+		roleArnVal, _ := res.Record().Get("roleArn")
+		roleArn, _ := roleArnVal.(string)
+		if roleArn == "" {
+			continue
+		}
+		if err := h.crawler.RebuildCanAccessForRole(ctx, session, roleArn); err != nil {
+			log.Printf("rebuilding CAN_ACCESS for %s: %v", roleArn, err)
+		}
+	}
+	return res.Err()
 }
 
 // HandlePolicyDelete procesa DeletePolicy.
 // El ARN viene directo en requestParameters.policyArn.
 func (h *IAMHandler) HandlePolicyDelete(ctx context.Context, driver neo4j.DriverWithContext, event *events.EventBridgeMessage) error {
-	var policyArn string
-	if len(event.Detail.RequestParameters) > 0 {
-		var req struct {
-			PolicyArn string `json:"policyArn"`
-		}
-		if err := json.Unmarshal(event.Detail.RequestParameters, &req); err == nil {
-			policyArn = req.PolicyArn
-		}
-	}
-	if policyArn == "" {
-		return fmt.Errorf("DeletePolicy event has no policyArn in requestParameters")
+	policyArn, err := extractPolicyArn(event)
+	if err != nil {
+		return fmt.Errorf("extracting policy arn: %w", err)
 	}
 
-	log.Printf("[%s] removing iam policy: %s", event.Detail.EventName, policyArn)
+	log.Printf("[%s] removing policy: %s", event.Detail.EventName, policyArn)
 
+	session := driver.NewSession(ctx, neo4j.SessionConfig{AccessMode: neo4j.AccessModeWrite})
+	defer session.Close(ctx)
+
+	// Capture affected roles BEFORE deleting (after delete the edges are gone)
+	res, err := session.Run(ctx, `
+		MATCH (r:IAMRole:AWSResource)-[:ATTACHED_POLICY]->(p:IAMPolicy:AWSResource {arn: $policyArn})
+		RETURN collect(r.arn) AS roleArns
+	`, map[string]any{"policyArn": policyArn})
+	if err != nil {
+		return fmt.Errorf("finding attached roles: %w", err)
+	}
+
+	var affectedRoles []string
+	if res.Next(ctx) {
+		raw, _ := res.Record().Get("roleArns")
+		if items, ok := raw.([]any); ok {
+			for _, item := range items {
+				if s, ok := item.(string); ok {
+					affectedRoles = append(affectedRoles, s)
+				}
+			}
+		}
+	}
+
+	// Delete the policy node (and all its edges via DETACH DELETE)
 	if err := h.crawler.DeletePolicyByArn(ctx, driver, policyArn); err != nil {
-		return fmt.Errorf("deleting iam policy %s: %w", policyArn, err)
+		return fmt.Errorf("deleting policy %s: %w", policyArn, err)
 	}
+
+	// Rebuild CAN_ACCESS for affected roles (they may still have other policies)
+	for _, roleArn := range affectedRoles {
+		if err := h.crawler.RebuildCanAccessForRole(ctx, session, roleArn); err != nil {
+			log.Printf("rebuilding CAN_ACCESS for %s after policy delete: %v", roleArn, err)
+		}
+	}
+
 	return nil
 }
 

@@ -14,6 +14,7 @@ import (
 	iamtypes "github.com/aws/aws-sdk-go-v2/service/iam/types"
 	"github.com/neo4j/neo4j-go-driver/v5/neo4j"
 
+	"infra-diagram/internal/inspector/parsers"
 	"infra-diagram/internal/models"
 )
 
@@ -365,7 +366,14 @@ func (c *IAMCrawler) IngestRelations(ctx context.Context, driver neo4j.DriverWit
 	if err := c.ingestInstanceProfileRelationsBulk(ctx, driver); err != nil {
 		return err
 	}
-	return c.ingestExecutesRelationsBulk(ctx, driver)
+	if err := c.ingestExecutesRelationsBulk(ctx, driver); err != nil {
+		return err
+	}
+	// materialize CAN_ACCESS relations (depends on ATTACHED_POLICY being done)
+	if err := c.ingestCanAccessRelationsBulk(ctx, driver); err != nil {
+		return err
+	}
+	return nil
 }
 
 // RebuildRelations recrea las relaciones ATTACHED_POLICY de UN rol.
@@ -560,4 +568,179 @@ func (c *IAMCrawler) DeletePolicyByArn(ctx context.Context, driver neo4j.DriverW
 		return fmt.Errorf("deleting iam policy %s: %w", arn, err)
 	}
 	return nil
+}
+
+// ingestCanAccessRelationsBulk crea relaciones (:IAMRole)-[:CAN_ACCESS]->(:Resource)
+// para todos los roles del grafo, parseando las policies adjuntas.
+//
+// Llamado desde IngestRelations como tercera fase, después de ATTACHED_POLICY
+// (que necesita estar materializada para que esta query funcione).
+func (c *IAMCrawler) ingestCanAccessRelationsBulk(ctx context.Context, driver neo4j.DriverWithContext) error {
+	session := driver.NewSession(ctx, neo4j.SessionConfig{AccessMode: neo4j.AccessModeWrite})
+	defer session.Close(ctx)
+
+	// Traer todos los roles con sus policies adjuntas y los documentos
+	res, err := session.Run(ctx, `
+		MATCH (r:IAMRole:AWSResource)-[:ATTACHED_POLICY]->(p:IAMPolicy:AWSResource)
+		WHERE p.policyDocument <> ""
+		RETURN r.arn AS roleArn, collect({arn: p.arn, document: p.policyDocument}) AS policies
+	`, nil)
+	if err != nil {
+		return fmt.Errorf("fetching roles with policies: %w", err)
+	}
+
+	for res.Next(ctx) {
+		record := res.Record()
+		roleArnVal, _ := record.Get("roleArn")
+		roleArn, _ := roleArnVal.(string)
+		if roleArn == "" {
+			continue
+		}
+
+		policiesVal, _ := record.Get("policies")
+		policies, _ := policiesVal.([]any)
+
+		if err := c.rebuildCanAccessForRole(ctx, session, roleArn, policies); err != nil {
+			log.Printf("rebuilding CAN_ACCESS for %s: %v", roleArn, err)
+			continue
+		}
+	}
+	return res.Err()
+}
+
+// RebuildCanAccessForRole recrea las relaciones CAN_ACCESS salientes de un
+// solo role. Usado por el worker cuando un evento afecta las policies del role.
+//
+// Hace su propio fetch de policies desde el grafo — espera que ATTACHED_POLICY
+// ya esté actualizada cuando se llama.
+func (c *IAMCrawler) RebuildCanAccessForRole(ctx context.Context, session neo4j.SessionWithContext, roleArn string) error {
+	res, err := session.Run(ctx, `
+		MATCH (r:IAMRole:AWSResource {arn: $roleArn})-[:ATTACHED_POLICY]->(p:IAMPolicy:AWSResource)
+		WHERE p.policyDocument <> ""
+		RETURN collect({arn: p.arn, document: p.policyDocument}) AS policies
+	`, map[string]any{"roleArn": roleArn})
+	if err != nil {
+		return fmt.Errorf("fetching policies for role: %w", err)
+	}
+
+	if !res.Next(ctx) {
+		// No policies attached — just clear any stale CAN_ACCESS
+		return c.clearCanAccess(ctx, session, roleArn)
+	}
+
+	policiesVal, _ := res.Record().Get("policies")
+	policies, _ := policiesVal.([]any)
+
+	return c.rebuildCanAccessForRole(ctx, session, roleArn, policies)
+}
+
+// RebuildCanAccessForRoleWithDriver es el wrapper que abre su propia sesión.
+func (c *IAMCrawler) RebuildCanAccessForRoleWithDriver(ctx context.Context, driver neo4j.DriverWithContext, roleArn string) error {
+	session := driver.NewSession(ctx, neo4j.SessionConfig{AccessMode: neo4j.AccessModeWrite})
+	defer session.Close(ctx)
+	return c.RebuildCanAccessForRole(ctx, session, roleArn)
+}
+
+// rebuildCanAccessForRole is the shared implementation. Receives the raw
+// policies list (from Cypher result) and rebuilds all CAN_ACCESS relations.
+func (c *IAMCrawler) rebuildCanAccessForRole(
+	ctx context.Context,
+	session neo4j.SessionWithContext,
+	roleArn string,
+	policies []any,
+) error {
+	// Step 1: clear existing CAN_ACCESS for this role
+	if err := c.clearCanAccess(ctx, session, roleArn); err != nil {
+		return err
+	}
+
+	// Step 2: for each policy, extract grants and create CAN_ACCESS relations
+	for _, p := range policies {
+		policyMap, ok := p.(map[string]any)
+		if !ok {
+			continue
+		}
+		policyArn, _ := policyMap["arn"].(string)
+		document, _ := policyMap["document"].(string)
+		if document == "" {
+			continue
+		}
+
+		parsed, err := parsers.ParsePolicyDocument(document)
+		if err != nil {
+			log.Printf("parsing policy %s for CAN_ACCESS: %v", policyArn, err)
+			continue
+		}
+
+		grants := parsers.ExtractAccessGrants(parsed)
+		for _, grant := range grants {
+			if !parsers.IsDataPlaneAction(grant.Action) {
+				continue
+			}
+			if grant.Resource == "*" {
+				// Wildcard resources are too broad to materialize as edges.
+				// Handled by the overpermissive insight instead.
+				continue
+			}
+			if err := c.createCanAccessEdge(ctx, session, roleArn, policyArn, grant); err != nil {
+				// Log but continue — one bad grant doesn't kill the rest
+				log.Printf("creating CAN_ACCESS for %s -> %s: %v", roleArn, grant.Resource, err)
+			}
+		}
+	}
+	return nil
+}
+
+// clearCanAccess removes all CAN_ACCESS edges outgoing from a role.
+func (c *IAMCrawler) clearCanAccess(ctx context.Context, session neo4j.SessionWithContext, roleArn string) error {
+	_, err := session.Run(ctx, `
+		MATCH (r:IAMRole:AWSResource {arn: $roleArn})-[edge:CAN_ACCESS]->()
+		DELETE edge
+	`, map[string]any{"roleArn": roleArn})
+	return err
+}
+
+// createCanAccessEdge creates one CAN_ACCESS edge if the target resource
+// exists in the graph. Uses prefix matching for ARN wildcards.
+func (c *IAMCrawler) createCanAccessEdge(
+	ctx context.Context,
+	session neo4j.SessionWithContext,
+	roleArn, sourcePolicy string,
+	grant parsers.AccessGrant,
+) error {
+	// Compute prefix for wildcard matching
+	prefix := grant.Resource
+	usePrefix := false
+	if strings.HasSuffix(prefix, "/*") {
+		prefix = prefix[:len(prefix)-2]
+		usePrefix = true
+	} else if strings.HasSuffix(prefix, "*") {
+		prefix = prefix[:len(prefix)-1]
+		usePrefix = true
+	}
+
+	var query string
+	if usePrefix {
+		query = `
+			MATCH (r:IAMRole:AWSResource {arn: $roleArn})
+			MATCH (target:AWSResource)
+			WHERE target.arn STARTS WITH $prefix
+			MERGE (r)-[edge:CAN_ACCESS {action: $action, sourcePolicy: $sourcePolicy}]->(target)
+		`
+	} else {
+		query = `
+			MATCH (r:IAMRole:AWSResource {arn: $roleArn})
+			MATCH (target:AWSResource {arn: $resource})
+			MERGE (r)-[edge:CAN_ACCESS {action: $action, sourcePolicy: $sourcePolicy}]->(target)
+		`
+	}
+
+	_, err := session.Run(ctx, query, map[string]any{
+		"roleArn":      roleArn,
+		"resource":     grant.Resource,
+		"prefix":       prefix,
+		"action":       grant.Action,
+		"sourcePolicy": sourcePolicy,
+	})
+	return err
 }
