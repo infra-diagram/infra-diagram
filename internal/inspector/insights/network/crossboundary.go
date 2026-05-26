@@ -1,4 +1,4 @@
-package insights
+package network
 
 import (
 	"context"
@@ -8,7 +8,7 @@ import (
 
 	"infra-diagram/internal/inspector"
 	"infra-diagram/internal/inspector/cypherutil"
-	"infra-diagram/internal/inspector/queries"
+	networkqueries "infra-diagram/internal/inspector/insights/network/queries"
 )
 
 // CrossBoundaryInsight detecta data flows que cruzan boundaries de VPC.
@@ -98,7 +98,7 @@ func (c *CrossBoundaryInsight) Execute(
 		},
 	}
 
-	cypherResult, err := session.Run(ctx, queries.CrossBoundary, map[string]any{
+	cypherResult, err := session.Run(ctx, networkqueries.CrossBoundary, map[string]any{
 		"accountId": filters.AccountID,
 	})
 	if err != nil {

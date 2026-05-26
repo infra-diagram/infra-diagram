@@ -1,4 +1,4 @@
-package insights
+package structural
 
 import (
 	"context"
@@ -7,7 +7,7 @@ import (
 	"github.com/neo4j/neo4j-go-driver/v5/neo4j"
 
 	"infra-diagram/internal/inspector"
-	"infra-diagram/internal/inspector/queries"
+	structuralqueries "infra-diagram/internal/inspector/insights/structural/queries"
 )
 
 // OrphansInsight detecta recursos sin la conectividad mínima esperada.
@@ -57,7 +57,7 @@ func (o *OrphansInsight) Execute(
 ) (*inspector.Result, error) {
 	checks := []orphanCheck{
 		{
-			query:        queries.OrphansQueue,
+			query:        structuralqueries.OrphansQueue,
 			resourceType: "Queue",
 			title:        "Queue with no producers",
 			description:  "This SQS queue does not receive messages from any known resource. It may be legacy configuration or a forgotten resource.",
@@ -65,7 +65,7 @@ func (o *OrphansInsight) Execute(
 			severity:     inspector.SeverityLow,
 		},
 		{
-			query:        queries.OrphansLambda,
+			query:        structuralqueries.OrphansLambda,
 			resourceType: "Function",
 			title:        "Lambda with unknown invokers",
 			description:  "This Lambda is not invoked by any known resource in the graph (event source mapping, S3 notification, etc.).",
@@ -73,7 +73,7 @@ func (o *OrphansInsight) Execute(
 			severity:     inspector.SeverityMedium,
 		},
 		{
-			query:        queries.OrphansRole,
+			query:        structuralqueries.OrphansRole,
 			resourceType: "IAMRole",
 			title:        "IAM role with unknown usage",
 			description:  "This role is not assigned to any EC2 instance or Lambda function in the graph.",
@@ -81,7 +81,7 @@ func (o *OrphansInsight) Execute(
 			severity:     inspector.SeverityInfo,
 		},
 		{
-			query:        queries.OrphansSubnet,
+			query:        structuralqueries.OrphansSubnet,
 			resourceType: "Subnet",
 			title:        "Empty subnet",
 			description:  "This subnet has no known resources assigned (EC2 instances, Lambdas).",

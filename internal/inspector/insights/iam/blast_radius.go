@@ -1,8 +1,7 @@
-package insights
+package iam
 
 import (
 	"context"
-	_ "embed"
 	"fmt"
 	"strings"
 
@@ -10,8 +9,8 @@ import (
 
 	"infra-diagram/internal/inspector"
 	"infra-diagram/internal/inspector/cypherutil"
+	iamqueries "infra-diagram/internal/inspector/insights/iam/queries"
 	"infra-diagram/internal/inspector/parsers"
-	"infra-diagram/internal/inspector/queries"
 )
 
 // BlastRadiusInsight computes the blast radius of an IAM Role: the set of
@@ -233,7 +232,7 @@ func (b *BlastRadiusInsight) fetchDirectRelationships(
 	session neo4j.SessionWithContext,
 	roleArn string,
 ) (*roleBlastData, error) {
-	res, err := session.Run(ctx, queries.BlastRadiusDirectQuery, map[string]any{
+	res, err := session.Run(ctx, iamqueries.BlastRadiusDirectQuery, map[string]any{
 		"roleArn": roleArn,
 	})
 	if err != nil {
@@ -269,7 +268,7 @@ func (b *BlastRadiusInsight) lookupResources(
 	session neo4j.SessionWithContext,
 	arns []string,
 ) ([]matchedResource, error) {
-	res, err := session.Run(ctx, queries.BlastRadiusResourceLookupQuery, map[string]any{
+	res, err := session.Run(ctx, iamqueries.BlastRadiusResourceLookupQuery, map[string]any{
 		"arns": arns,
 	})
 	if err != nil {

@@ -12,7 +12,10 @@ import (
 	neo4jdriver "github.com/neo4j/neo4j-go-driver/v5/neo4j"
 
 	"infra-diagram/internal/inspector"
-	"infra-diagram/internal/inspector/insights"
+	"infra-diagram/internal/inspector/insights/data"
+	"infra-diagram/internal/inspector/insights/iam"
+	"infra-diagram/internal/inspector/insights/network"
+	"infra-diagram/internal/inspector/insights/structural"
 )
 
 func main() {
@@ -46,11 +49,11 @@ func main() {
 
 	// === Register insights ===
 	registry := inspector.NewRegistry()
-	registry.Register(insights.NewOrphansInsight())
-	registry.Register(insights.NewOverpermissiveInsight())
-	registry.Register(insights.NewCrossBoundaryInsight())
-	registry.Register(insights.NewBlastRadiusInsight())
-	registry.Register(insights.NewAccessPatternsInsight())
+	registry.Register(structural.NewOrphansInsight())
+	registry.Register(iam.NewOverpermissiveInsight())
+	registry.Register(network.NewCrossBoundaryInsight())
+	registry.Register(iam.NewBlastRadiusInsight())
+	registry.Register(data.NewAccessPatternsInsight())
 
 	runner := inspector.NewRunner(driver)
 	filters := inspector.StandardFilters{

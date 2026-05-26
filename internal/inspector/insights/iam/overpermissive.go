@@ -1,15 +1,14 @@
-package insights
+package iam
 
 import (
 	"context"
-	_ "embed"
 	"fmt"
 
 	"github.com/neo4j/neo4j-go-driver/v5/neo4j"
 
 	"infra-diagram/internal/inspector"
 	"infra-diagram/internal/inspector/parsers"
-	"infra-diagram/internal/inspector/queries"
+	iamqueries "infra-diagram/internal/inspector/insights/iam/queries"
 )
 
 // OverpermissiveInsight detecta policies con permisos excesivos.
@@ -60,7 +59,7 @@ func (o *OverpermissiveInsight) Execute(
 		return result, nil
 	}
 
-	cypherResult, err := session.Run(ctx, queries.OverPermissive, map[string]any{
+	cypherResult, err := session.Run(ctx, iamqueries.OverPermissive, map[string]any{
 		"accountId": filters.AccountID,
 	})
 	if err != nil {
