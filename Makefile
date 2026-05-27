@@ -1,4 +1,4 @@
-.PHONY: help discover worker build clean test fmt
+.PHONY: help discover worker build clean test fmt api migrate-up
 
 # Cargar variables del .env si existe
 ifneq (,$(wildcard .env))
@@ -34,6 +34,13 @@ fmt: ## Formatear código
 
 clean: ## Limpiar binarios
 	rm -rf bin/
+
+
+api: ## Run the API server
+	go run ./cmd/api
+
+migrate-up: ## Apply database migrations
+	docker exec -i infra-diagram-postgres psql -U infra_diagram -d infra_diagram < internal/store/postgres/migrations/001_create_accounts.up.sql
 
 
 # USAGE:
