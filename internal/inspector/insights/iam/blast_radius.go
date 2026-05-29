@@ -63,10 +63,10 @@ func (b *BlastRadiusInsight) Execute(
 	// === Param validation ===
 	roleArn, ok := params["role_arn"].(string)
 	if !ok || roleArn == "" {
-		return nil, fmt.Errorf("parameter 'role_arn' is required and must be a non-empty string")
+		return nil, fmt.Errorf("%w: role_arn is required", inspector.ErrMissingParam)
 	}
 	if !strings.HasPrefix(roleArn, "arn:aws:iam::") || !strings.Contains(roleArn, ":role/") {
-		return nil, fmt.Errorf("parameter 'role_arn' must be a valid IAM role ARN, got: %s", roleArn)
+		return nil, fmt.Errorf("%w: role_arn must be a valid IAM role ARN, got %s", inspector.ErrInvalidParam, roleArn)
 	}
 
 	result := &inspector.Result{

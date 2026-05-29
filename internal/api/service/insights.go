@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/google/uuid"
 
@@ -55,7 +56,6 @@ func (s *Service) RunInsight(
 	insightType string,
 	extraParams map[string]any,
 ) (*inspector.Result, error) {
-	// Resolve account
 	account, err := s.store.GetAccount(ctx, accountID)
 	if err != nil {
 		if errors.Is(err, store.ErrAccountNotFound) {
@@ -64,17 +64,27 @@ func (s *Service) RunInsight(
 		return nil, err
 	}
 
-	// Resolve insight
 	insight, ok := s.registry.Get(insightType)
 	if !ok {
 		return nil, ErrInsightNotFound
 	}
 
-	// Build filters with the AWS account ID
 	filters := inspector.StandardFilters{
 		AccountID: account.AWSAccountID,
 	}
 
-	// Execute
-	return s.runner.Run(ctx, insight, filters, extraParams)
+	result, err := s.runner.Run(ctx, insight, filters, extraParams)
+	if err != nil {
+		// Translate inspector validation errors to service errors
+		// so handlers map them to 400 instead of 500.
+		if errors.Is(err, inspector.ErrMissingParam) {
+			return nil, fmt.Errorf("%w: %v", ErrMissingParam, err)
+		}
+		if errors.Is(err, inspector.ErrInvalidParam) {
+			return nil, fmt.Errorf("%w: %v", ErrInvalidParam, err)
+		}
+		return nil, err
+	}
+
+	return result, nil
 }
