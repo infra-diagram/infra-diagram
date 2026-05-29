@@ -37,10 +37,10 @@ type Metadata struct {
 }
 
 type ParameterSpec struct {
-	Name        string
-	Type        string // "string" | "arn" | "duration" | "int"
-	Required    bool
-	Description string
+	Name        string `json:"name"`
+	Type        string `json:"type"`
+	Required    bool   `json:"required"`
+	Description string `json:"description"`
 }
 
 // StandardFilters son los filtros que TODO insight respeta. Se aplican
