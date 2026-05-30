@@ -1,0 +1,47 @@
+@import "tailwindcss";
+
+/* Fuentes técnicas (IBM Plex) cargadas vía <link> en index.html. */
+
+@theme {
+  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+
+  /* Consola oscura: slate frío de fondo, acento ámbar de "señal". */
+  --color-bg: oklch(0.16 0.012 250);
+  --color-surface: oklch(0.21 0.014 250);
+  --color-surface-2: oklch(0.26 0.016 250);
+  --color-border: oklch(0.33 0.018 250);
+  --color-fg: oklch(0.93 0.01 250);
+  --color-muted: oklch(0.68 0.015 250);
+
+  --color-accent: oklch(0.78 0.16 65); /* ámbar señal */
+  --color-accent-fg: oklch(0.18 0.02 65);
+
+  /* Escala de severidad (LOW < MEDIUM < HIGH < CRITICAL). */
+  --color-sev-low: oklch(0.72 0.09 200);
+  --color-sev-medium: oklch(0.80 0.14 90);
+  --color-sev-high: oklch(0.72 0.17 45);
+  --color-sev-critical: oklch(0.62 0.21 25);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background-color: var(--color-bg);
+  color: var(--color-fg);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Atmósfera sutil: rejilla técnica de fondo, sin ruido visual excesivo. */
+#root {
+  background-image:
+    linear-gradient(to right, oklch(0.21 0.014 250 / 0.5) 1px, transparent 1px),
+    linear-gradient(to bottom, oklch(0.21 0.014 250 / 0.5) 1px, transparent 1px);
+  background-size: 44px 44px;
+}
