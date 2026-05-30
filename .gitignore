@@ -64,6 +64,5 @@ crash.log
 
 # --- Específicos del Proyecto (Infra-diagram) ---
 # Si corres Neo4j localmente o generas diagramas temporales
-data/
 logs/
 tmp/

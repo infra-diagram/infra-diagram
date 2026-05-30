@@ -33,14 +33,23 @@ func New(addr string, svc *service.Service) *Server {
 
 	// Routes
 	r.Get("/health", h.Health)
+
 	r.Route("/insights", func(r chi.Router) {
 		r.Get("/", h.ListInsights)
+
 		r.Route("/{type}", func(r chi.Router) {
+			r.Get("/summary", h.FindingsSummary)
+
+			r.Route("/findings", func(r chi.Router) {
+				r.Get("/", h.ListFindings)
+				r.Get("/{finding_id}", h.GetFinding)
+				r.Get("/{finding_id}/graph", h.GetFindingGraph)
+			})
+
+			// DEPRECATED — remove after frontend migrates off /results.
 			r.Get("/results", h.InsightResults)
-			r.Get("/graph", h.InsightGraph)
 		})
 	})
-
 	return &Server{
 		addr: addr,
 		httpSrv: &http.Server{

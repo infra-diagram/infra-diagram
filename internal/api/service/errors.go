@@ -24,4 +24,8 @@ var (
 	// ErrInvalidParam: a parameter has invalid format.
 	// Maps to 400.
 	ErrInvalidParam = errors.New("invalid parameter")
+
+	// ErrFindingNotFound: a finding has not found.
+	// Maps to 404.
+	ErrFindingNotFound = errors.New("finding not found")
 )

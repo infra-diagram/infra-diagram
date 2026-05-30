@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -13,6 +14,12 @@ import (
 	"infra-diagram/internal/inspector"
 )
 
+const (
+	defaultPage     = 1
+	defaultPageSize = 25
+	maxPageSize     = 200
+)
+
 // ListInsights returns the catalog of available insights.
 // GET /insights
 func (h *Handlers) ListInsights(w http.ResponseWriter, r *http.Request) {
@@ -20,70 +27,162 @@ func (h *Handlers) ListInsights(w http.ResponseWriter, r *http.Request) {
 	render.JSON(w, http.StatusOK, insights)
 }
 
-// InsightResults runs an insight and returns its findings.
-// GET /insights/{type}/results?account_id={id}
-func (h *Handlers) InsightResults(w http.ResponseWriter, r *http.Request) {
-	result, ok := h.runInsight(w, r)
-	if !ok {
+// FindingsSummary returns severity counts + total for an insight (dashboard).
+// GET /insights/{type}/summary?account_id={id}
+func (h *Handlers) FindingsSummary(w http.ResponseWriter, r *http.Request) {
+	accountID, err := parseAccountID(r)
+	if err != nil {
+		render.Error(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	render.JSON(w, http.StatusOK, map[string]any{
-		"insight_id":      result.InsightID,
-		"insight_version": result.InsightVersion,
-		"executed_at":     result.ExecutedAt,
-		"execution_ms":    result.ExecutionMS,
-		"findings":        result.Findings,
-	})
+
+	sum, err := h.service.GetFindingsSummary(
+		r.Context(), accountID, insightTypeFromURL(r), parseExtraParams(r),
+	)
+	if err != nil {
+		mapServiceError(w, err)
+		return
+	}
+	render.JSON(w, http.StatusOK, sum)
 }
 
-// InsightGraph runs an insight and returns its subgraph in Cytoscape format.
-// GET /insights/{type}/graph?account_id={id}
-func (h *Handlers) InsightGraph(w http.ResponseWriter, r *http.Request) {
-	result, ok := h.runInsight(w, r)
-	if !ok {
+// ListFindings returns a paginated, severity-filtered list of finding views.
+// GET /insights/{type}/findings?account_id={id}[&severity=HIGH&page=1&page_size=25]
+func (h *Handlers) ListFindings(w http.ResponseWriter, r *http.Request) {
+	accountID, err := parseAccountID(r)
+	if err != nil {
+		render.Error(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	graph := render.ToCytoscape(result.Subgraph)
+
+	severity, err := parseSeverity(r)
+	if err != nil {
+		render.Error(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	page, pageSize := parsePagination(r)
+
+	res, err := h.service.ListFindings(
+		r.Context(), accountID, insightTypeFromURL(r), parseExtraParams(r),
+		service.ListFindingsOptions{Severity: severity, Page: page, PageSize: pageSize},
+	)
+	if err != nil {
+		mapServiceError(w, err)
+		return
+	}
+	render.JSON(w, http.StatusOK, res)
+}
+
+// GetFinding returns the full detail for a single finding.
+// GET /insights/{type}/findings/{finding_id}?account_id={id}
+func (h *Handlers) GetFinding(w http.ResponseWriter, r *http.Request) {
+	accountID, err := parseAccountID(r)
+	if err != nil {
+		render.Error(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	detail, err := h.service.GetFinding(
+		r.Context(), accountID, insightTypeFromURL(r),
+		chi.URLParam(r, "finding_id"), parseExtraParams(r),
+	)
+	if err != nil {
+		mapServiceError(w, err)
+		return
+	}
+	render.JSON(w, http.StatusOK, detail)
+}
+
+// GetFindingGraph returns the subgraph of a single finding in Cytoscape format.
+// GET /insights/{type}/findings/{finding_id}/graph?account_id={id}
+func (h *Handlers) GetFindingGraph(w http.ResponseWriter, r *http.Request) {
+	accountID, err := parseAccountID(r)
+	if err != nil {
+		render.Error(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	g, err := h.service.GetFindingGraph(
+		r.Context(), accountID, insightTypeFromURL(r),
+		chi.URLParam(r, "finding_id"), parseExtraParams(r),
+	)
+	if err != nil {
+		mapServiceError(w, err)
+		return
+	}
+
+	graph := render.ToCytoscape(g.Subgraph)
 	render.JSON(w, http.StatusOK, map[string]any{
-		"insight_id":      result.InsightID,
-		"insight_version": result.InsightVersion,
-		"executed_at":     result.ExecutedAt,
-		"execution_ms":    result.ExecutionMS,
+		"insight_id":      g.InsightID,
+		"insight_version": g.InsightVersion,
+		"finding_id":      g.FindingID,
+		"executed_at":     g.ExecutedAt,
+		"execution_ms":    g.ExecutionMS,
 		"nodes":           graph.Nodes,
 		"edges":           graph.Edges,
 	})
 }
 
-// runInsight is the shared logic for both /results and /graph:
-// parse params, execute the insight, handle errors. Returns the Result
-// and true on success; writes the error response and returns false on failure.
-func (h *Handlers) runInsight(w http.ResponseWriter, r *http.Request) (*inspector.Result, bool) {
+// InsightResults is DEPRECATED. Kept as a thin alias during migration so
+// existing clients don't break. New clients should use /findings.
+// Remove once the frontend has migrated. Returns the unpaginated full list.
+// GET /insights/{type}/results?account_id={id}
+func (h *Handlers) InsightResults(w http.ResponseWriter, r *http.Request) {
 	accountID, err := parseAccountID(r)
 	if err != nil {
 		render.Error(w, http.StatusBadRequest, err.Error())
-		return nil, false
+		return
 	}
 
-	insightType := insightTypeFromURL(r)
-	extraParams := parseExtraParams(r)
-
-	result, err := h.service.RunInsight(r.Context(), accountID, insightType, extraParams)
+	res, err := h.service.ListFindings(
+		r.Context(), accountID, insightTypeFromURL(r), parseExtraParams(r),
+		service.ListFindingsOptions{Page: 1, PageSize: maxPageSize},
+	)
 	if err != nil {
 		mapServiceError(w, err)
-		return nil, false
+		return
 	}
+	render.JSON(w, http.StatusOK, res)
+}
 
-	return result, true
+// --- param parsing ---
+
+func parsePagination(r *http.Request) (page, pageSize int) {
+	page, pageSize = defaultPage, defaultPageSize
+	q := r.URL.Query()
+	if v := q.Get("page"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			page = n
+		}
+	}
+	if v := q.Get("page_size"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			if n > maxPageSize {
+				n = maxPageSize
+			}
+			pageSize = n
+		}
+	}
+	return page, pageSize
+}
+
+func parseSeverity(r *http.Request) (inspector.Severity, error) {
+	v := strings.ToUpper(strings.TrimSpace(r.URL.Query().Get("severity")))
+	if v == "" {
+		return "", nil
+	}
+	switch inspector.Severity(v) {
+	case inspector.SeverityInfo, inspector.SeverityLow, inspector.SeverityMedium,
+		inspector.SeverityHigh, inspector.SeverityCritical:
+		return inspector.Severity(v), nil
+	default:
+		return "", errors.New("invalid severity; must be one of INFO, LOW, MEDIUM, HIGH, CRITICAL")
+	}
 }
 
 // parseExtraParams collects insight-specific query parameters.
-//
-// Known insight parameters are extracted from query string. We don't have
-// a generic schema-driven parser yet, so for the MVP we collect the params
-// that current insights use: role_arn, overprivileged_threshold,
-// overshared_threshold.
-//
-// Unknown params are ignored. Each insight validates its own required params.
+// Unknown params are ignored; each insight validates its own required params.
 func parseExtraParams(r *http.Request) map[string]any {
 	params := map[string]any{}
 	q := r.URL.Query()
@@ -101,11 +200,8 @@ func parseExtraParams(r *http.Request) map[string]any {
 			params["overshared_threshold"] = n
 		}
 	}
-
 	return params
 }
-
-// === Shared helpers ===
 
 func parseAccountID(r *http.Request) (uuid.UUID, error) {
 	raw := r.URL.Query().Get("account_id")
@@ -129,6 +225,8 @@ func mapServiceError(w http.ResponseWriter, err error) {
 		render.Error(w, http.StatusNotFound, "account not found")
 	case errors.Is(err, service.ErrInsightNotFound):
 		render.Error(w, http.StatusNotFound, "insight not found")
+	case errors.Is(err, service.ErrFindingNotFound):
+		render.Error(w, http.StatusNotFound, "finding not found")
 	case errors.Is(err, service.ErrMissingParam):
 		render.Error(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, service.ErrInvalidParam):
