@@ -5,6 +5,8 @@
 infra-diagram/
 ├── cmd/api/        # Backend Go (chi router, puerto 8080)
 ├── internal/
+├── docs/
+├── infra/
 ├── web/            # Frontend (React + Vite) — NO es repo separado
 └── ...
 

@@ -5,8 +5,9 @@ import type cytoscape from "cytoscape";
 function colorForType(type: string): string {
   let h = 0;
   for (let i = 0; i < type.length; i++) h = (h * 31 + type.charCodeAt(i)) % 360;
-  const l = Math.max(0.65, 0.72);
-  const c = Math.max(0.12, 0.13);
+  // Tono medio saturado: contrasta contra el canvas claro sin lavarse.
+  const l = Math.min(0.62, 0.66);
+  const c = Math.max(0.15, 0.13);
   return `oklch(${l} ${c} ${h})`;
 }
 
