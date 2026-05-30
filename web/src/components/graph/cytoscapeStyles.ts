@@ -5,7 +5,9 @@ import type cytoscape from "cytoscape";
 function colorForType(type: string): string {
   let h = 0;
   for (let i = 0; i < type.length; i++) h = (h * 31 + type.charCodeAt(i)) % 360;
-  return `oklch(0.72 0.13 ${h})`;
+  const l = Math.max(0.65, 0.72);
+  const c = Math.max(0.12, 0.13);
+  return `oklch(${l} ${c} ${h})`;
 }
 
 const readVar = (name: string) =>
@@ -30,6 +32,10 @@ export function buildStylesheet(): cytoscape.StylesheetStyle[] {
         "text-margin-y": 4,
         "text-wrap": "ellipsis",
         "text-max-width": "90px",
+        "text-background-color": "var(--color-bg)",
+        "text-background-opacity": 0.75,
+        "text-background-padding": "3px",
+        "text-background-shape": "roundrectangle",
         width: 18,
         height: 18,
         "border-width": 1,
