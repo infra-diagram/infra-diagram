@@ -14,9 +14,15 @@ export default defineConfig({
     },
   },
   server: {
+    // "/insights" no puede ser un prefijo simple: colisiona con la ruta de
+    // React Router "/insights/:type" (la página, no la API). Un match de
+    // prefijo reenvía esa navegación al backend Go, que la 404ea. Se matchean
+    // por regex (Vite trata las keys que empiezan con "^" como RegExp) solo
+    // las rutas reales de la API.
     proxy: {
       "/health": "http://localhost:8080",
-      "/insights": "http://localhost:8080",
+      "^/insights$": "http://localhost:8080",
+      "^/insights/[^/]+/(summary|findings|results)(/|$|\\?)": "http://localhost:8080",
     },
   },
   // Build hacia ../cmd/api/web_dist para embeber con go:embed (ver README).
