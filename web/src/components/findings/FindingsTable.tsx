@@ -1,18 +1,22 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import type { Finding, Severity } from "@/api/types";
+import type { FindingView, ParamValues, Severity } from "@/api/types";
+import { useFinding } from "@/hooks/useFinding";
 import { compareSeverityDesc } from "@/lib/severity";
-import { SeverityBadge } from "@/components/ui/primitives";
+import { SeverityBadge, Spinner } from "@/components/ui/primitives";
 
-const SEVERITIES: Severity[] = ["CRITICAL", "HIGH", "MEDIUM", "LOW"];
+const SEVERITIES: Severity[] = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"];
 
 interface Props {
-  findings: Finding[];
+  findings: FindingView[];
   total: number;
+  type: string;
+  accountId: string;
+  params: ParamValues;
   // Deep-link
   selectedArn: string | null;
   pendingFindingId: string | null;
-  onLocateInGraph: (arn: string) => void;
+  onLocateInGraph: (findingId: string, arn: string) => void;
 }
 
 // Virtualizada: a 250+ findings solo se montan las filas visibles.
@@ -20,6 +24,9 @@ interface Props {
 export function FindingsTable({
   findings,
   total,
+  type,
+  accountId,
+  params,
   selectedArn,
   pendingFindingId,
   onLocateInGraph,
@@ -110,34 +117,77 @@ export function FindingsTable({
                   <span className="text-muted">{open ? "−" : "+"}</span>
                 </button>
                 {open && (
-                  <div className="space-y-3 bg-bg px-4 py-3 text-sm">
-                    <Field label="resource">
-                      <div className="flex items-start justify-between gap-3">
-                        <span className="break-all font-mono text-xs">
-                          {f.resource.type} · {f.resource.arn}
-                        </span>
-                        <button
-                          onClick={() => onLocateInGraph(f.resource.arn)}
-                          className="shrink-0 rounded border border-border px-2 py-0.5 font-mono text-[11px] hover:border-accent hover:text-accent"
-                        >
-                          ver en grafo →
-                        </button>
-                      </div>
-                    </Field>
-                    <Field label="description">{f.description}</Field>
-                    <Field label="remediation">{f.remediation}</Field>
-                    <Field label="evidence">
-                      <pre className="overflow-auto rounded bg-surface p-2 font-mono text-[11px] text-muted">
-                        {JSON.stringify(f.evidence, null, 2)}
-                      </pre>
-                    </Field>
-                  </div>
+                  <FindingDetailPanel
+                    finding={f}
+                    type={type}
+                    accountId={accountId}
+                    params={params}
+                    onLocateInGraph={onLocateInGraph}
+                  />
                 )}
               </div>
             );
           })}
         </div>
       </div>
+    </div>
+  );
+}
+
+// Detalle completo, fetcheado on-demand al expandir (la fila de la lista solo
+// trae resource/severity/title/related_count — no description/remediation/evidence).
+function FindingDetailPanel({
+  finding,
+  type,
+  accountId,
+  params,
+  onLocateInGraph,
+}: {
+  finding: FindingView;
+  type: string;
+  accountId: string;
+  params: ParamValues;
+  onLocateInGraph: (findingId: string, arn: string) => void;
+}) {
+  const detail = useFinding({ type, accountId, findingId: finding.id, params, enabled: true });
+
+  return (
+    <div className="space-y-3 bg-bg px-4 py-3 text-sm">
+      <Field label="resource">
+        <div className="flex items-start justify-between gap-3">
+          <span className="break-all font-mono text-xs">
+            {finding.resource.type} · {finding.resource.arn}
+          </span>
+          <button
+            onClick={() => onLocateInGraph(finding.id, finding.resource.arn)}
+            className="shrink-0 rounded border border-border px-2 py-0.5 font-mono text-[11px] hover:border-accent hover:text-accent"
+          >
+            ver en grafo →
+          </button>
+        </div>
+      </Field>
+
+      {detail.isLoading && <Spinner label="Cargando detalle…" />}
+      {detail.isError && (
+        <p className="text-xs text-sev-high">
+          No se pudo cargar el detalle: {(detail.error as Error)?.message}
+        </p>
+      )}
+      {detail.data && (
+        <>
+          <Field label="description">{detail.data.description}</Field>
+          {detail.data.remediation && (
+            <Field label="remediation">{detail.data.remediation}</Field>
+          )}
+          {detail.data.evidence && (
+            <Field label="evidence">
+              <pre className="overflow-auto rounded bg-surface p-2 font-mono text-[11px] text-muted">
+                {JSON.stringify(detail.data.evidence, null, 2)}
+              </pre>
+            </Field>
+          )}
+        </>
+      )}
     </div>
   );
 }

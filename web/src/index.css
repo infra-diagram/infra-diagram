@@ -17,7 +17,8 @@
   --color-accent: oklch(0.70 0.16 65); /* ámbar señal */
   --color-accent-fg: oklch(0.22 0.03 65);
 
-  /* Escala de severidad (LOW < MEDIUM < HIGH < CRITICAL). */
+  /* Escala de severidad (INFO < LOW < MEDIUM < HIGH < CRITICAL). */
+  --color-sev-info: oklch(0.60 0.02 250);
   --color-sev-low: oklch(0.55 0.11 200);
   --color-sev-medium: oklch(0.62 0.14 90);
   --color-sev-high: oklch(0.58 0.18 45);

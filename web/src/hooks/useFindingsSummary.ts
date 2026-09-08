@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { getInsightResults } from "@/api/insights";
+import { getFindingsSummary } from "@/api/insights";
 import type { ParamValues } from "@/api/types";
 
 interface Opts {
@@ -9,10 +9,10 @@ interface Opts {
   enabled: boolean;
 }
 
-export function useInsightResults({ type, accountId, params, enabled }: Opts) {
+export function useFindingsSummary({ type, accountId, params, enabled }: Opts) {
   return useQuery({
-    queryKey: ["results", type, accountId, params],
-    queryFn: () => getInsightResults(type, accountId, params),
+    queryKey: ["findings-summary", type, accountId, params],
+    queryFn: () => getFindingsSummary(type, accountId, params),
     enabled,
     staleTime: 5 * 60_000,
     gcTime: 30 * 60_000,

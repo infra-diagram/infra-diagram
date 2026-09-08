@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import cytoscape from "cytoscape";
-import type { Finding, GraphResponse } from "@/api/types";
+import type { FindingGraphResponse, FindingView } from "@/api/types";
 import { buildStylesheet } from "./cytoscapeStyles";
 import { layoutConfig, registerLayouts, type LayoutName } from "./layouts";
 import { GraphControls } from "./GraphControls";
@@ -9,11 +9,11 @@ import { SeverityBadge } from "@/components/ui/primitives";
 registerLayouts();
 
 interface Props {
-  data: GraphResponse;
+  data: FindingGraphResponse;
   // Deep-link: ARN en foco (compartido con la tabla de findings).
   selectedArn: string | null;
   onSelectNode: (arn: string | null) => void;
-  relatedFindings: Finding[];
+  relatedFindings: FindingView[];
   findingsLoaded: boolean;
   onOpenFinding: (findingId: string, arn: string) => void;
 }

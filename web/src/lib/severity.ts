@@ -1,14 +1,16 @@
 import type { Severity } from "@/api/types";
 
 export const SEVERITY_ORDER: Record<Severity, number> = {
-  LOW: 0,
-  MEDIUM: 1,
-  HIGH: 2,
-  CRITICAL: 3,
+  INFO: 0,
+  LOW: 1,
+  MEDIUM: 2,
+  HIGH: 3,
+  CRITICAL: 4,
 };
 
 // Mapea a la variable CSS definida en index.css (@theme).
 export const SEVERITY_COLOR_VAR: Record<Severity, string> = {
+  INFO: "var(--color-sev-info)",
   LOW: "var(--color-sev-low)",
   MEDIUM: "var(--color-sev-medium)",
   HIGH: "var(--color-sev-high)",

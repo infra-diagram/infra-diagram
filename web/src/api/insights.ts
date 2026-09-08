@@ -1,10 +1,13 @@
 import { apiGet } from "./client";
 import type {
-  GraphResponse,
+  FindingDetail,
+  FindingGraphResponse,
+  FindingsPage,
+  FindingsSummary,
   HealthResponse,
   Insight,
   ParamValues,
-  ResultsResponse,
+  Severity,
 } from "./types";
 
 // NORMALIZACIÓN EN LA FRONTERA.
@@ -23,30 +26,64 @@ export async function getInsights(): Promise<Insight[]> {
   return (data ?? []).map((i) => ({ ...i, parameters: i.parameters ?? [] }));
 }
 
-// GET /insights/{type}/graph?account_id=...&<params>
-// params lleva role_arn / thresholds / lo que declare el ParameterSpec.
-export async function getInsightGraph(
+// GET /insights/{type}/summary?account_id=...&<params>
+export function getFindingsSummary(
   type: string,
   accountId: string,
   params: ParamValues = {},
-): Promise<GraphResponse> {
-  const data = await apiGet<GraphResponse>(`/insights/${type}/graph`, {
+): Promise<FindingsSummary> {
+  return apiGet<FindingsSummary>(`/insights/${type}/summary`, {
     account_id: accountId,
     ...params,
   });
-  return { ...data, nodes: data.nodes ?? [], edges: data.edges ?? [] };
 }
 
-// GET /insights/{type}/results?account_id=...&<params>
-// OJO: los params required (ej. role_arn) también aplican aquí, no solo en /graph.
-export async function getInsightResults(
+export interface ListFindingsOptions {
+  severity?: Severity;
+  page?: number;
+  pageSize?: number;
+}
+
+// GET /insights/{type}/findings?account_id=...&severity=&page=&page_size=&<params>
+export async function getFindings(
   type: string,
   accountId: string,
   params: ParamValues = {},
-): Promise<ResultsResponse> {
-  const data = await apiGet<ResultsResponse>(`/insights/${type}/results`, {
+  opts: ListFindingsOptions = {},
+): Promise<FindingsPage> {
+  const data = await apiGet<FindingsPage>(`/insights/${type}/findings`, {
     account_id: accountId,
+    severity: opts.severity,
+    page: opts.page,
+    page_size: opts.pageSize,
     ...params,
   });
   return { ...data, findings: data.findings ?? [] };
+}
+
+// GET /insights/{type}/findings/{finding_id}?account_id=...&<params>
+export function getFinding(
+  type: string,
+  accountId: string,
+  findingId: string,
+  params: ParamValues = {},
+): Promise<FindingDetail> {
+  return apiGet<FindingDetail>(`/insights/${type}/findings/${findingId}`, {
+    account_id: accountId,
+    ...params,
+  });
+}
+
+// GET /insights/{type}/findings/{finding_id}/graph?account_id=...&<params>
+export async function getFindingGraph(
+  type: string,
+  accountId: string,
+  findingId: string,
+  params: ParamValues = {},
+): Promise<FindingGraphResponse> {
+  const data = await apiGet<FindingGraphResponse>(
+    `/insights/${type}/findings/${findingId}/graph`,
+    { account_id: accountId, ...params },
+  );
+  return { ...data, nodes: data.nodes ?? [], edges: data.edges ?? [] };
 }

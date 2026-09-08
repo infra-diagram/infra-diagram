@@ -1,20 +1,23 @@
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { useInsights } from "@/hooks/useInsights";
-import { useInsightGraph } from "@/hooks/useInsightGraph";
-import { useInsightResults } from "@/hooks/useInsightResults";
+import { useFindingsSummary } from "@/hooks/useFindingsSummary";
+import { useFindings } from "@/hooks/useFindings";
+import { useFindingGraph } from "@/hooks/useFindingGraph";
 import { useAccount } from "@/state/account";
 import { InsightParamsForm } from "@/components/insights/InsightParamsForm";
 import { FindingsTable } from "@/components/findings/FindingsTable";
 import { EmptyState, ErrorState, SeverityBadge, Spinner } from "@/components/ui/primitives";
-import type { Finding, ParamValues } from "@/api/types";
+import type { FindingView, ParamValues, Severity } from "@/api/types";
 
 // Cytoscape (~500 kB) solo se carga cuando se renderiza el grafo, no en el catálogo.
 const GraphCanvas = lazy(() =>
   import("@/components/graph/GraphCanvas").then((m) => ({ default: m.GraphCanvas })),
 );
 
-type Tab = "graph" | "findings";
+type Tab = "findings" | "graph";
+
+const SEVERITY_DISPLAY_ORDER: Severity[] = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"];
 
 export function InsightPage() {
   const { type = "" } = useParams();
@@ -22,17 +25,21 @@ export function InsightPage() {
   const { data: catalog } = useInsights();
   const insight = catalog?.find((i) => i.id === type);
 
-  const [tab, setTab] = useState<Tab>("graph");
+  const [tab, setTab] = useState<Tab>("findings");
   const [params, setParams] = useState<ParamValues>({});
 
-  // --- Estado compartido del deep-link: el recurso (ARN) en foco ---
-  // node.data.id (grafo) === finding.resource.arn (tabla). Ese ARN es el puente.
+  // --- Estado compartido del deep-link ---
+  // El grafo ahora está scoped a UN finding (contrato /findings/{id}/graph),
+  // así que "ver en grafo" necesita el hash id, no solo el ARN.
+  const [selectedFindingId, setSelectedFindingId] = useState<string | null>(null);
+  // ARN en foco dentro del grafo — puente hacia la tabla de findings.
   const [selectedArn, setSelectedArn] = useState<string | null>(null);
   // Finding a abrir/desplazar cuando se entra al tab Findings desde el grafo.
   const [pendingFindingId, setPendingFindingId] = useState<string | null>(null);
 
   // Resetear el foco al cambiar de insight.
   useEffect(() => {
+    setSelectedFindingId(null);
     setSelectedArn(null);
     setPendingFindingId(null);
   }, [type]);
@@ -48,22 +55,19 @@ export function InsightPage() {
   const hasAccount = accountId.trim().length > 0;
   const canRun = hasAccount && requiredComplete;
 
-  const graph = useInsightGraph({
+  const summary = useFindingsSummary({ type, accountId, params, enabled: canRun });
+  const results = useFindings({ type, accountId, params, enabled: tab === "findings" && canRun });
+  const graph = useFindingGraph({
     type,
     accountId,
+    findingId: selectedFindingId,
     params,
     enabled: tab === "graph" && canRun,
-  });
-  const results = useInsightResults({
-    type,
-    accountId,
-    params,
-    enabled: tab === "findings" && canRun,
   });
 
   // Findings agrupados por ARN para lookup O(1) desde el panel del grafo.
   const findingsByArn = useMemo(() => {
-    const m = new Map<string, Finding[]>();
+    const m = new Map<string, FindingView[]>();
     for (const f of results.data?.findings ?? []) {
       const arr = m.get(f.resource.arn) ?? [];
       arr.push(f);
@@ -81,8 +85,9 @@ export function InsightPage() {
     setTab("findings");
   }
 
-  // findings -> grafo: ubicar el recurso de un finding en el grafo.
-  function locateInGraph(arn: string) {
+  // findings -> grafo: cargar el subgrafo scoped a ese finding.
+  function locateInGraph(findingId: string, arn: string) {
+    setSelectedFindingId(findingId);
     setSelectedArn(arn);
     setTab("graph");
   }
@@ -135,9 +140,25 @@ export function InsightPage() {
         />
       </div>
 
+      {canRun && summary.data && (
+        <div className="mb-4 flex flex-wrap items-center gap-2 rounded-lg border border-border bg-surface px-3 py-2">
+          <span className="font-mono text-xs text-muted">{summary.data.total} findings</span>
+          {SEVERITY_DISPLAY_ORDER.filter((sev) => summary.data!.severity_counts[sev] > 0).map(
+            (sev) => (
+              <span key={sev} className="inline-flex items-center gap-1">
+                <SeverityBadge severity={sev} />
+                <span className="font-mono text-[11px] text-muted">
+                  ×{summary.data!.severity_counts[sev]}
+                </span>
+              </span>
+            ),
+          )}
+        </div>
+      )}
+
       {/* Tabs */}
       <div className="mb-4 flex gap-1 border-b border-border">
-        {(["graph", "findings"] as const).map((t) => (
+        {(["findings", "graph"] as const).map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
@@ -147,14 +168,47 @@ export function InsightPage() {
                 : "border-transparent text-muted hover:text-fg"
             }`}
           >
-            {t === "graph" ? "Graph" : "Findings"}
+            {t === "findings" ? "Findings" : "Graph"}
           </button>
         ))}
       </div>
 
       {blockedReason ? (
         <EmptyState title="Listo para ejecutar" hint={blockedReason} />
-      ) : tab === "graph" ? (
+      ) : tab === "findings" ? (
+        <TabState
+          query={results}
+          render={(d) =>
+            d.pagination.total === 0 ? (
+              <EmptyState title="0 findings" hint="Nada que reportar. 🎉" />
+            ) : (
+              <FindingsTable
+                findings={d.findings}
+                total={d.pagination.total}
+                type={type}
+                accountId={accountId}
+                params={params}
+                selectedArn={selectedArn}
+                pendingFindingId={pendingFindingId}
+                onLocateInGraph={locateInGraph}
+              />
+            )
+          }
+        />
+      ) : !selectedFindingId ? (
+        <EmptyState
+          title="Sin finding seleccionado"
+          hint={
+            <>
+              Elegí un finding en el tab{" "}
+              <button onClick={() => setTab("findings")} className="text-accent underline">
+                Findings
+              </button>{" "}
+              y usá "ver en grafo →" para ver su subgrafo.
+            </>
+          }
+        />
+      ) : (
         <TabState
           query={graph}
           render={(d) =>
@@ -171,23 +225,6 @@ export function InsightPage() {
                   onOpenFinding={openFinding}
                 />
               </Suspense>
-            )
-          }
-        />
-      ) : (
-        <TabState
-          query={results}
-          render={(d) =>
-            d.findings_count === 0 ? (
-              <EmptyState title="0 findings" hint="Nada que reportar. 🎉" />
-            ) : (
-              <FindingsTable
-                findings={d.findings}
-                total={d.findings_count}
-                selectedArn={selectedArn}
-                pendingFindingId={pendingFindingId}
-                onLocateInGraph={locateInGraph}
-              />
             )
           }
         />

@@ -1,7 +1,7 @@
 // Contratos del backend Go. Modelados 1:1 con las structs para que un cambio
 // de contrato falle en compile-time y no en runtime.
 
-export type Severity = "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
+export type Severity = "INFO" | "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
 
 export type ParameterType = "int" | "float" | "string" | "bool" | "arn";
 
@@ -51,31 +51,86 @@ export interface CyEdge {
   data: CyEdgeData;
 }
 
-// GET /insights/{type}/graph
-export interface GraphResponse {
+export interface ResourceRef {
+  arn: string;
+  type: string;
+  name: string;
+  region?: string;
+  tags?: Record<string, string>;
+}
+
+export interface SeverityCounts {
+  CRITICAL: number;
+  HIGH: number;
+  MEDIUM: number;
+  LOW: number;
+  INFO: number;
+}
+
+export interface Pagination {
+  page: number;
+  page_size: number;
+  total: number;
+  total_pages: number;
+}
+
+// Fila liviana de /insights/{type}/findings — sin evidence/remediation/description.
+export interface FindingView {
+  id: string; // hash estable, URL-safe — usar para /findings/{id} y /findings/{id}/graph
+  key: string; // ID canónico del insight (verboso, no URL-safe)
+  resource: ResourceRef;
+  severity: Severity;
+  title: string;
+  related_count: number;
+}
+
+// GET /insights/{type}/findings/{finding_id}
+export interface FindingDetail {
+  id: string;
+  key: string;
   insight_id: string;
   insight_version: string;
+  resource: ResourceRef;
+  severity: Severity;
+  title: string;
+  description: string;
+  evidence?: Record<string, unknown>;
+  remediation?: string;
+  related_resources?: ResourceRef[];
+}
+
+// GET /insights/{type}/findings?account_id=...&severity=&page=&page_size=
+export interface FindingsPage {
+  insight_id: string;
+  insight_version: string;
+  account_id: string;
+  executed_at: string;
+  execution_ms: number;
+  pagination: Pagination;
+  severity_counts: SeverityCounts;
+  findings: FindingView[];
+}
+
+// GET /insights/{type}/summary
+export interface FindingsSummary {
+  insight_id: string;
+  insight_version: string;
+  account_id: string;
+  executed_at: string;
+  execution_ms: number;
+  total: number;
+  severity_counts: SeverityCounts;
+}
+
+// GET /insights/{type}/findings/{finding_id}/graph
+export interface FindingGraphResponse {
+  insight_id: string;
+  insight_version: string;
+  finding_id: string;
   executed_at: string;
   execution_ms: number;
   nodes: CyNode[];
   edges: CyEdge[];
-}
-
-// GET /insights/{type}/results
-export interface Finding {
-  id: string;
-  resource: { arn: string; type: string; name: string };
-  severity: Severity;
-  title: string;
-  description: string;
-  remediation: string;
-  evidence: Record<string, unknown>;
-}
-
-export interface ResultsResponse {
-  insight_id: string;
-  findings_count: number;
-  findings: Finding[];
 }
 
 // GET /health
