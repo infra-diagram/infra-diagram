@@ -12,16 +12,33 @@ infra-diagram/
 
 ## Backend
 
-Go, chi router, puerto 8080
-4 endpoints disponibles:
+Go, chi router, puerto 8080. Findings es la unidad primaria de la API (hash
+SHA256 de 16 hex chars como ID estable, ver `internal/api/service/findings.go`):
 - GET /health
 - GET /insights
-- GET /insights/{type}/results?account_id={uuid}&<params>
-- GET /insights/{type}/graph?account_id={uuid}&<params>   ← role_arn solo para blast_radius
+- GET /insights/{type}/summary?account_id={uuid}&<params>
+- GET /insights/{type}/findings?account_id={uuid}&<params>[&severity=&page=&page_size=]
+- GET /insights/{type}/findings/{finding_id}?account_id={uuid}&<params>
+- GET /insights/{type}/findings/{finding_id}/graph?account_id={uuid}&<params>   ← subgrafo scoped a ESE finding, no el grafo completo del insight
+- GET /insights/{type}/results?account_id={uuid}&<params>   ← DEPRECATED, alias de compat (sin description/remediation/evidence por finding). No usar en frontend nuevo.
+
+`role_arn` solo aplica a `iam.blast_radius` (requerido en todos los endpoints scoped a ese insight).
+
+**No existe un endpoint de "grafo completo del insight".** Fue reemplazado por
+`/findings/{id}/graph` en la reestructuración a Findings-como-unidad-primaria.
+El frontend arma la experiencia de grafo entrando siempre desde un finding
+concreto (ver "Deep-link nodo ↔ finding" más abajo).
 
 **Quirk importante:** Go serializa slices nil como `null`, no `[]`. Los campos
   `parameters`, `nodes`, `edges`, `findings` pueden llegar como `null` desde el backend.
   Ya está resuelto en `web/src/api/insights.ts` normalizando en la frontera.
+
+**Cuidado con el proxy de Vite:** `/insights` es prefijo tanto de rutas de API
+(`/insights/{type}/findings`) como de la ruta de página de React Router
+(`/insights/{type}`). El proxy dev (`web/vite.config.ts`) matchea por regex
+las rutas de API específicas — no agregar una entrada de prefijo plano
+`"/insights"` de nuevo, rompe la navegación directa/refresh a la página del insight
+(la pega contra el backend Go, que la 404ea).
 
 ## 5 insights disponibles
 
@@ -31,13 +48,13 @@ Go, chi router, puerto 8080
 | `iam.overpermissive_policies` | ninguno |
 | `network.crossboundary` | ninguno |
 | `data.access_patterns` | ninguno (`overprivileged_threshold`, `overshared_threshold` opcionales) |
-| `iam.blast_radius` | `role_arn` (requerido en `/graph` Y en `/results`) |
+| `iam.blast_radius` | `role_arn` (requerido en todos los endpoints scoped al insight) |
 
 ## Frontend — web/
 
 ### Stack
 - React 19 + TypeScript estricto
-- Vite 6 (proxy dev: `/health` y `/insights` → `:8080`)
+- Vite 6 (proxy dev: `/health` y las rutas de API bajo `/insights` → `:8080`, por regex — ver nota de Backend)
 - TailwindCSS v4 (`@theme` en `src/index.css`, sin `tailwind.config.js`)
 - TanStack Query v5 (data layer)
 - React Router v7
@@ -49,12 +66,14 @@ src/
 ├── api/
 │   ├── types.ts          # Contratos tipados 1:1 con structs Go
 │   ├── client.ts         # fetch wrapper, ApiError, buildQuery
-│   └── insights.ts       # 4 funciones tipadas + normalización de nulls
+│   └── insights.ts       # funciones tipadas (summary/findings/finding/finding-graph) + normalización de nulls
 ├── hooks/
-│   ├── useInsights.ts        # GET /insights (staleTime: Infinity)
-│   ├── useInsightGraph.ts    # GET /insights/:type/graph (lazy, enabled prop)
-│   ├── useInsightResults.ts  # GET /insights/:type/results (lazy, enabled prop)
-│   └── useHealth.ts          # GET /health (refetchInterval: 30s)
+│   ├── useInsights.ts          # GET /insights (staleTime: Infinity)
+│   ├── useFindingsSummary.ts   # GET /insights/:type/summary (badges, independiente del tab activo)
+│   ├── useFindings.ts          # GET /insights/:type/findings (lazy, tab Findings)
+│   ├── useFinding.ts           # GET /insights/:type/findings/:id (lazy, al expandir una fila)
+│   ├── useFindingGraph.ts      # GET /insights/:type/findings/:id/graph (lazy, tab Graph + finding seleccionado)
+│   └── useHealth.ts            # GET /health (refetchInterval: 30s)
 ├── state/
 │   └── account.tsx       # Context de account_id (input simple, localStorage)
 ├── lib/
@@ -88,33 +107,43 @@ src/
 ### Decisiones de diseño clave
 
 **Tema visual:** consola técnica oscura. Fuentes IBM Plex Sans (UI) + IBM Plex Mono
-(ARNs, IDs, tipos). Acento ámbar. Severidad con 4 colores oklch distintos.
+(ARNs, IDs, tipos). Acento ámbar. Severidad con 5 colores oklch distintos (INFO/LOW/MEDIUM/HIGH/CRITICAL).
 
-**Gating de queries:** graph y results no se disparan hasta tener `account_id` +
+**Gating de queries:** summary/findings/graph no se disparan hasta tener `account_id` +
 todos los `required: true` de `parameters` completos. El gating es derivado (useMemo),
 no estado, para no desincronizarse cuando el catálogo resuelve el insight.
 
-**Carga perezosa por tab:** el tab Graph no dispara la query si estás en Findings y
-viceversa. `enabled: tab === "graph" && canRun`.
+**Carga perezosa por tab:** el tab Graph no dispara `useFindingGraph` si estás en
+Findings y viceversa (`enabled: tab === "graph" && canRun`). `useFindingsSummary`
+es la excepción: corre independientemente del tab activo para mostrar la barra
+de severidad apenas `canRun` es true.
 
 **Cytoscape ref-based:** instancia en `useEffect` sobre `<div ref>`, no
 `react-cytoscapejs`. Tres efectos separados: crear instancia (datos), re-layout
 (layout), búsqueda (sobre instancia viva). Lazy-loaded con `React.lazy` para no
 incluir los ~500 kB en el bundle del catálogo.
 
-**Deep-link nodo ↔ finding:** `selectedArn` es estado compartido en `InsightPage`.
-Puente: `node.data.id === finding.resource.arn`. 
-- Grafo → Findings: click en nodo muestra findings relacionados en panel, click en
-  uno navega al tab Findings, expande la fila y hace scroll hasta ella.
-- Findings → Grafo: botón "ver en grafo →" en finding expandido, centra y selecciona
-  el nodo en el canvas.
+**Deep-link nodo ↔ finding:** el grafo está scoped a UN finding (contrato
+`/findings/{id}/graph`), no es más el grafo completo del insight. Estado
+compartido en `InsightPage`: `selectedFindingId` (qué subgrafo pedir) +
+`selectedArn` (qué nodo/recurso está en foco, puente: `node.data.id === finding.resource.arn`).
+- Findings → Grafo: botón "ver en grafo →" en finding expandido llama
+  `locateInGraph(findingId, arn)` → fija `selectedFindingId` y cambia de tab.
+- Grafo → Findings: click en nodo busca en `findingsByArn` (construido desde
+  la lista ya cacheada de `useFindings`, no desde el subgrafo) y muestra
+  TODOS los findings de ese recurso —no solo el que originó el subgrafo— en
+  un panel; click en uno navega al tab Findings, expande la fila y hace scroll
+  hasta ella.
 
 **Form de parámetros genérico:** `InsightParamsForm` se construye desde
 `ParameterSpec[]`. Tipos `int`/`float` → `inputMode="numeric"`, resto texto.
 Insights nuevos funcionan sin tocar el componente.
 
 **Findings virtualizados:** `useVirtualizer` de TanStack Virtual con medición
-dinámica (`measureElement`) para filas expandibles de altura variable.
+dinámica (`measureElement`) para filas expandibles de altura variable. La fila
+de la lista (`FindingView`) es liviana — sin `description`/`remediation`/`evidence`;
+al expandir, `FindingDetailPanel` dispara `useFinding` (lazy, `enabled: true`
+solo mientras está montado) para traer el detalle completo por hash id.
 
 ### Contratos de la API
 
@@ -124,20 +153,36 @@ dinámica (`measureElement`) para filas expandibles de altura variable.
 
 // Insight
 { id: string; version: string; title: string; description: string;
-  category: string; severity: "LOW"|"MEDIUM"|"HIGH"|"CRITICAL";
+  category: string; severity: "INFO"|"LOW"|"MEDIUM"|"HIGH"|"CRITICAL";
   parameters: ParameterSpec[] }  // ← puede llegar null del backend, normalizar
 
-// GraphResponse
-{ insight_id: string; insight_version: string; executed_at: string;
-  execution_ms: number;
+// ResourceRef
+{ arn: string; type: string; name: string; region?: string; tags?: Record<string,string> }
+
+// FindingsSummary — GET /insights/{type}/summary
+{ insight_id: string; insight_version: string; account_id: string;
+  executed_at: string; execution_ms: number; total: number;
+  severity_counts: { CRITICAL: number; HIGH: number; MEDIUM: number; LOW: number; INFO: number } }
+
+// FindingsPage — GET /insights/{type}/findings
+{ insight_id: string; insight_version: string; account_id: string;
+  executed_at: string; execution_ms: number;
+  pagination: { page: number; page_size: number; total: number; total_pages: number };
+  severity_counts: {...};
+  findings: { id: string /* hash, URL-safe */; key: string /* ID canónico verboso */;
+    resource: ResourceRef; severity: string; title: string; related_count: number }[] }
+
+// FindingDetail — GET /insights/{type}/findings/{finding_id}
+{ id: string; key: string; insight_id: string; insight_version: string;
+  resource: ResourceRef; severity: string; title: string; description: string;
+  evidence?: Record<string,unknown>; remediation?: string; related_resources?: ResourceRef[] }
+
+// FindingGraphResponse — GET /insights/{type}/findings/{finding_id}/graph
+// Subgrafo SCOPED a ese finding (anchor + related_resources), no el grafo completo del insight.
+{ insight_id: string; insight_version: string; finding_id: string;
+  executed_at: string; execution_ms: number;
   nodes: { data: { id: string; label: string; type: string; properties?: Record<string,unknown> } }[];
   edges: { data: { id: string; source: string; target: string; label?: string } }[] }
-
-// ResultsResponse
-{ insight_id: string; findings_count: number;
-  findings: { id: string; resource: { arn: string; type: string; name: string };
-    severity: string; title: string; description: string;
-    remediation: string; evidence: Record<string,unknown> }[] }
 ```
 
 ### Variables de entorno
@@ -162,6 +207,12 @@ npm run typecheck
 - Go serializa `[]T nil` como `null` → normalizado en `api/insights.ts`
 - Cytoscape no acepta ARNs con `:` como selectores CSS →
   usar `cy.getElementById(arn)` en vez de `cy.$(#${arn})`
+- El frontend quedó atrasado tras la reestructuración a Findings-como-unidad-primaria
+  (llamaba a `/graph` y `/results` con los shapes viejos) → migrado a
+  `/summary`+`/findings`+`/findings/{id}`+`/findings/{id}/graph`
+- Proxy de Vite con prefijo plano `"/insights"` colisionaba con la ruta de página
+  `/insights/:type` (navegación directa/refresh devolvía el 404 del backend Go) →
+  proxy por regex, solo rutas de API reales (ver nota en Backend)
 
 ## Fuera del MVP (no implementar)
 
